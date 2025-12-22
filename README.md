@@ -23,17 +23,21 @@
 <sup>3</sup>
 <a href="https://www.amd.com/en.html"><img width="33%" src="assets/images/AMD-logo.png" style="vertical-align: top;" alt="AMD logo"></a>
 
-<a href="https://arxiv.org/abs/2407.01866"><img src="https://img.shields.io/badge/arXiv-2407.01866-red" alt="arXiv"></a>
-<a href="https://www.immersivecomputinglab.org/publication/image-gs-content-adaptive-image-representation-via-2d-gaussians/"><img src="https://img.shields.io/badge/project page-ImageGS-blue" alt="project page"></a>
-<a href="https://github.com/NYU-ICL/image-gs"><img src="https://visitor-badge.laobi.icu/badge?page_id=NYU-ICL.image-gs&left_color=green&right_color=red" alt="visitors"></a>
+<a href="https://arxiv.org/abs/2407.01866"><img src="https://img.shields.io/badge/arXiv-2407.01866-ff5a5f" alt="arXiv"></a>
+<a href="https://www.immersivecomputinglab.org/publication/image-gs-content-adaptive-image-representation-via-2d-gaussians/"><img src="https://img.shields.io/badge/project-ImageGS-9fa0ff" alt="Project Page"></a>
+<a href="https://github.com/NYU-ICL/image-gs"><img src="https://visitor-badge.laobi.icu/badge?page_id=NYU-ICL.image-gs&left_color=gray&right_color=lightgreen" alt="Visitors"></a>
+<a href="https://www.youtube.com/watch?v=_WjU5d26Cc4"><img src="https://img.shields.io/badge/Two Minute Papers-ffee32" alt="Two Minute Papers"></a>
+<a href="https://learnopencv.com/image-gs-image-reconstruction-using-2d-gaussians/"><img src="https://img.shields.io/badge/LearnOpenCV-4cc9f0" alt="LearnOpenCV"></a>
 
 </div>
 
 <div style="width: 90%; margin: 0 auto;">
+  <p>
   Neural image representations have emerged as a promising approach for encoding and rendering visual data. Combined with learning-based workflows, they demonstrate impressive trade-offs between visual fidelity and memory footprint. Existing methods in this domain, however, often rely on fixed data structures that suboptimally allocate memory or compute-intensive implicit models, hindering their practicality for real-time graphics applications.
-  
+  </p>
+  <p>
   Inspired by recent advancements in radiance field rendering, we introduce Image-GS, a content-adaptive image representation based on 2D Gaussians. Leveraging a custom differentiable renderer, Image-GS reconstructs images by adaptively allocating and progressively optimizing a group of anisotropic, colored 2D Gaussians. It achieves a favorable balance between visual fidelity and memory efficiency across a variety of stylized images frequently seen in graphics workflows, especially for those showing non-uniformly distributed features and in low-bitrate regimes. Moreover, it supports hardware-friendly rapid random access for real-time usage, requiring only 0.3K MACs to decode a pixel. Through error-guided progressive optimization, Image-GS naturally constructs a smooth level-of-detail hierarchy. We demonstrate its versatility with several applications, including texture compression, semantics-aware compression, and joint image compression and restoration.
-
+  </p>
   <img src="assets/images/teaser.jpg" width="100%" />
   <sub>
   Figure 1: Image-GS reconstructs an image by adaptively allocating and progressively optimizing a set of colored 2D Gaussians. It achieves favorable rate-distortion trade-offs, hardware-friendly random access, and flexible quality control through a smooth level-of-detail stack. (a) visualizes the optimized spatial distribution of Gaussians (20% randomly sampled for clarity). (b) Image-GS’s explicit content-adaptive design effectively captures non-uniformly distributed image features and better preserves fine details under constrained memory budgets. In the inset error maps, brighter colors indicate larger errors.
@@ -148,7 +152,7 @@ Please refer to `cfgs/default.yaml` for the full list of arguments and their def
 - `--disable_prog_optim` disable error-guided progressive optimization.
 
 ## Acknowledgements
-We would like to thank the [gsplat](https://github.com/nerfstudio-project/gsplat) team, and the authors of [3DGS](https://github.com/graphdeco-inria/gaussian-splatting), [fused-ssim](https://github.com/rahul-goel/fused-ssim), and [EML-Net](https://github.com/SenJia/EML-NET-Saliency) for their great work, based on which Image-GS was developed.
+We would like to thank the [gsplat](https://github.com/nerfstudio-project/gsplat) team, as well as the authors of [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting), [Fused SSIM](https://github.com/rahul-goel/fused-ssim), and [EML-Net](https://github.com/SenJia/EML-NET-Saliency) for their outstanding work, which provided an important foundation for the development of Image-GS. We also thank [Károly Zsolnai-Fehér](https://users.cg.tuwien.ac.at/zsolnai/about/) for featuring our work on [Two Minute Papers](https://www.youtube.com/watch?v=_WjU5d26Cc4) and introducing it to a broader audience, and [Shubham Anand](https://www.linkedin.com/in/shubham-anand-91a10b211/) for creating a clear, thorough, and well-explained tutorial on our work on [LearnOpenCV](https://learnopencv.com/image-gs-image-reconstruction-using-2d-gaussians/).
 
 ## License
 This project is licensed under the terms of the MIT license.
