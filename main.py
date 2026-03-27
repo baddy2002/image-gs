@@ -6,7 +6,7 @@ from model import GaussianSplatting2D
 from utils.misc_utils import load_cfg
 
 
-def get_gaussian_cfg(args):
+def get_gaussian_config(args):
     gaussian_cfg = f"num-{args.num_gaussians:d}"
     if args.disable_inverse_scale:
         gaussian_cfg += f"_scale-{args.init_scale:.1f}"
@@ -27,7 +27,7 @@ def get_gaussian_cfg(args):
 
 
 def get_log_dir(args):
-    gaussian_cfg = get_gaussian_cfg(args)
+    gaussian_cfg = get_gaussian_config(args)
     loss_cfg = f"l1-{args.l1_loss_ratio:.1f}_l2-{args.l2_loss_ratio:.1f}_ssim-{args.ssim_loss_ratio:.1f}"
     folder = f"{gaussian_cfg}_{loss_cfg}"
     if args.downsample:
@@ -51,6 +51,7 @@ def main(args):
 if __name__ == "__main__":
     torch.hub.set_dir("models/torch")
     parser = argparse.ArgumentParser()
+    #parametri di default
     parser = load_cfg(cfg_path="cfgs/default.yaml", parser=parser)
     arguments = parser.parse_args()
     main(arguments)

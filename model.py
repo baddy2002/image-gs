@@ -13,6 +13,7 @@ from fused_ssim import fused_ssim
 from lpips import LPIPS
 from pytorch_msssim import MS_SSIM
 from torchvision.transforms.functional import gaussian_blur
+import cv2
 
 from gsplat import (
     project_gaussians_2d_scale_rot,
@@ -62,6 +63,8 @@ class GaussianSplatting2D(nn.Module):
             self._init_pos_scale_feat(args)
 
     def _init_logging(self, args):
+        """crea cartelle e configura il logger per scrivere su stdout e txt per 
+        poter controllare il file in secondo momento (es train durante la notte)"""
         self.log_dir = args.log_dir
         self.log_level = args.log_level
         self.ckpt_dir = os.path.join(self.log_dir, "checkpoints")
@@ -103,6 +106,13 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info("***********************************************")
 
     def _init_target(self, args):
+        """
+        Carica l'immagine originale (Ground Truth - GT). 
+        Gestisce
+            Gamma Correction: le immagini sono spesso salvate in spazio sRGB non lineare, ma i calcoli si fanno in spazio lineare
+            Downsampling: se vuoi allenarti su versioni più piccole per fare prima.
+            Maschera per fare flood fill
+        """
         self.gamma = args.gamma
         self.downsample = args.downsample
         if self.downsample:
@@ -122,6 +132,48 @@ class GaussianSplatting2D(nn.Module):
             path = f"{self.log_dir}/gt_res-{self.img_h:d}x{self.img_w:d}"
             self._separate_and_save_images(images=self.gt_images, channels=self.input_channels, path=path)
 
+        self._mask_empty_areas(args)
+        
+    def _mask_empty_areas(self, args):
+        # 1. Convertiamo il tensor GT (Ground Truth) in un'immagine numpy usabile da OpenCV
+        # gt_images è solitamente (H, W, C) e in range [0, 1]
+        #FIXME: siamo sicuri?
+        img_np = (self.gt_images.cpu().numpy() * 255).astype(np.uint8)
+        h, w, _ = img_np.shape
+
+        # 2. Creiamo una maschera inizialmente tutta bianca (255)
+        # Lo scopo è colorare di nero (0) le zone esterne
+        mask_np = np.ones((h, w), dtype=np.uint8) * 255
+
+        # 3. Definiamo i punti di partenza (i 4 angoli)
+        seeds = [(0, 0), (0, w-1), (h-1, 0), (h-1, w-1)]
+
+        # 4. Flood Fill: partiamo dagli angoli. 
+        # Se il colore è simile (tolleranza 2,2,2), lo consideriamo "vuoto"
+        temp_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+        for seed in seeds:
+            cv2.floodFill(img_np, temp_mask, seed, (0, 0, 0), 
+                        loDiff=(2, 2, 2), upDiff=(2, 2, 2))
+
+        # La temp_mask di OpenCV ha 1 dove ha riempito. Noi vogliamo l'opposto.
+        # Prendiamo la zona riempita (background) e la mettiamo a 0 nella nostra maschera
+        filled_area = temp_mask[1:-1, 1:-1]
+        mask_np[filled_area == 1] = 0
+
+        # 5. Riportiamo la maschera in PyTorch e sulla GPU
+        self.mask = torch.from_numpy(mask_np).float().to(self.gt_images.device) / 255.0
+        
+        # Se la maschera deve avere la stessa forma di gt_images (H, W, 1)
+        if len(self.mask.shape) == 2:
+            self.mask = self.mask.unsqueeze(-1)
+
+        print(f"Maschera creata con Flood Fill. Pixel attivi: {int(self.mask.sum())}/{self.num_pixels}")
+        
+        cv2.imwrite(f"{self.log_dir}/uv_mask.png", mask_np)
+
+        #TODO: check it
+
+
     def _load_target_images(self, path, downsample_ratio=None):
         self.gt_images, self.input_channels, self.image_fnames, self.bit_depths = load_images(
             load_path=path, downsample_ratio=downsample_ratio, gamma=self.gamma)
@@ -136,6 +188,7 @@ class GaussianSplatting2D(nn.Module):
             save_image(image, f"{path}{suffix}.{self.save_image_format}", gamma=self.gamma)
 
     def _init_bit_precision(self, args):
+        """inizializza la quantità di bit da usare per ogni informazione"""
         self.quantize = args.quantize
         self.pos_bits = args.pos_bits
         self.scale_bits = args.scale_bits
@@ -143,9 +196,26 @@ class GaussianSplatting2D(nn.Module):
         self.feat_bits = args.feat_bits
 
     def _init_gaussians(self, args):
+        """
+        1. per evitare caos di gradienti si usa ottimizzazione progressiva partendo solo
+           con una percentuale di gaussiane 
+           (stabilità. Inizi a delineare le forme grosse con poche gaussiane, e poi aggiungi i dettagli dove serve (dove l'errore è alto))
+                self.initial_ratio -> percentuale iniziale di gaussiane
+                self.add_steps -> Ogni quanti step di allenamento aggiungiamo nuove gaussiane
+                self.add_times -> Quante volte ripetiamo l'aggiunta
+                self.max_add_num -> quante gaussiante aggiungiamo ogni volta
+
+        2. definisce la struttura delle gaussiane 
+            self.xy -> La posizione centrale $(x, y)$ di ogni gaussiana.
+            self.scale -> La dimensione (lunghezza e larghezza).
+            self.rot -> L'angolo di rotazione.
+            self.feat -> I "fatures", ovvero il colore (RGB) della gaussiana.
+        
+        """
         self.num_gaussians = args.num_gaussians
         self.total_num_gaussians = args.num_gaussians
         self.disable_prog_optim = args.disable_prog_optim
+        #se non è disabilitata l'ottimizzazione progressiva oppure se siamo in evaluation
         if not self.disable_prog_optim and not self.evaluate:
             self.initial_ratio = args.initial_ratio
             self.add_times = args.add_times
@@ -162,7 +232,26 @@ class GaussianSplatting2D(nn.Module):
         self.disable_topk_norm = args.disable_topk_norm
         self.disable_inverse_scale = args.disable_inverse_scale
         self.disable_color_init = args.disable_color_init
-        self.xy = nn.Parameter(torch.rand(self.num_gaussians, 2, dtype=self.dtype, device=self.device), requires_grad=True)
+        
+
+        # 1. Troviamo dove la maschera è "bianca" (valore > 0.5)
+        # self.mask è (H, W, 1). Cerchiamo gli indici (y, x)
+        coords = torch.nonzero(self.mask.squeeze(-1) > 0.5)
+        # 2. Calcoliamo quante gaussiane iniziali servono davvero
+        num_to_init = self.num_gaussians
+
+        # 3. Peschiamo indici casuali tra le coordinate valide della maschera
+        indices = torch.randint(0, coords.shape[0], (num_to_init,), device=self.device)
+        chosen_coords = coords[indices].to(self.dtype) # Coordinate (y, x)
+
+        # 4. Normalizziamo in [0, 1] per inizializzare self.xy
+        # Invertiamo (y, x) in (x, y) perché solitamente il renderer vuole x come prima colonna
+        init_x = chosen_coords[:, 1] / (self.img_w - 1)
+        init_y = chosen_coords[:, 0] / (self.img_h - 1)
+        initial_positions = torch.stack([init_x, init_y], dim=-1)
+
+        #Modifica posizione per evitare che sia nello sfondo
+        self.xy = nn.Parameter(initial_positions, requires_grad=True)
         self.scale = nn.Parameter(torch.ones(self.num_gaussians, 2, dtype=self.dtype, device=self.device), requires_grad=True)
         self.rot = nn.Parameter(torch.zeros(self.num_gaussians, 1, dtype=self.dtype, device=self.device), requires_grad=True)
         self.feat_dim = sum(self.input_channels)
@@ -171,6 +260,22 @@ class GaussianSplatting2D(nn.Module):
         self._log_compression_rate()
 
     def _log_compression_rate(self):
+        """
+        Calolo della compressione
+            1 - calcola dimensione dell'immaggine non compressa: pixel*num_canali
+
+            2 - calcola dimensione(bit) compressa: 
+                - num_gaussian
+                - 2*self.pos_bits (per x e per y)
+                - 2*self.scale_bits 
+                        Poiché è un'ellisse e non un cerchio perfetto, 
+                        ha un raggio maggiore e un raggio minore. Quindi due valori di scala
+                - self.rot_bits  
+                        Per ruotare un'ellisse nel piano 2D basta un solo angolo
+                        In 3D sarebbe molto più complesso (quaternioni), ma in 2D è un singolo scalare.
+                - self.feat_dim * self.feat_bits  
+                        numero canali * numero bit per canale 
+        """
         bytes_uncompressed = 0.0
         curr_channel = 0
         for num_channels, bit_depth in zip(self.input_channels, self.bit_depths):
@@ -183,7 +288,9 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info(f"Uncompressed: {bytes_uncompressed/1e3:.2f} KB | {bpp_uncompressed:.3f} bpp | {bppc_uncompressed:.3f} bppc")
         bits_compressed = (2*self.pos_bits + 2*self.scale_bits + self.rot_bits + self.feat_dim*self.feat_bits) * self.total_num_gaussians
         bytes_compressed = bits_compressed / 8.0
+        #JPEG sui 1.5/2.0 
         bpp_compressed = float(bits_compressed) / self.num_pixels
+        #per capire efficienza che l'immagine sia RGB o bianco e nero
         bppc_compressed = bpp_compressed / self.feat_dim
         self.num_bytes = bytes_compressed
         self.worklog.info(f"Compressed: {bytes_compressed/1e3:.2f} KB | {bpp_compressed:.3f} bpp | {bppc_compressed:.3f} bppc")
@@ -191,6 +298,9 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info("***********************************************")
 
     def _init_loss(self, args):
+        """
+        Definisce i pesi per L1, L2 e SSIM.
+        """
         self.l1_loss = None
         self.l2_loss = None
         self.ssim_loss = None
@@ -199,6 +309,10 @@ class GaussianSplatting2D(nn.Module):
         self.ssim_loss_ratio = args.ssim_loss_ratio
 
     def _init_optimization(self, args):
+        """
+        Configura ottimizzatore (Adam), ogni parametro (pos, scale, rot etc) 
+        ha un learning rate diverso (es cambi posizione più velocemente di quanto cambi colore..)
+        """
         self.disable_tiles = args.disable_tiles
         self.start_step = 1
         self.max_steps = args.max_steps
@@ -206,6 +320,7 @@ class GaussianSplatting2D(nn.Module):
         self.scale_lr = args.scale_lr
         self.rot_lr = args.rot_lr
         self.feat_lr = args.feat_lr
+        #Adam per ottimizzare
         self.optimizer = torch.optim.Adam([{'params': self.xy, 'lr': self.pos_lr},
                                            {'params': self.scale, 'lr': self.scale_lr},
                                            {'params': self.rot, 'lr': self.rot_lr},
@@ -314,9 +429,14 @@ class GaussianSplatting2D(nn.Module):
             self.feat.copy_(ste_quantize(self.feat, self.feat_bits))
 
     def render(self, render_height=None):
+        """
+        renderizza l'immagine
+        """
         img_h, img_w = self.img_h, self.img_w
+        # rendirizza immagine con un'altezza diversa specificata 
         if render_height is not None:
             img_h, img_w = render_height, round((float(render_height)/img_h)*img_w)
+        # divide l'immagine in blocchi per fare in modo di usare un tile per blocco di thread della GPU 
         tile_bounds = ((img_w + self.block_w - 1) // self.block_w, (img_h + self.block_h - 1) // self.block_h, 1)
         upsample_ratio = float(img_h) / self.img_h
         with torch.no_grad():
@@ -347,15 +467,19 @@ class GaussianSplatting2D(nn.Module):
         return render_time_all
 
     def forward(self, img_h, img_w, tile_bounds, upsample_ratio=None, benchmark=False):
+        # recupera i parametri eventualmente quantizzati
         scale = self._get_scale(upsample_ratio=upsample_ratio)
         xy, rot, feat = self.xy, self.rot, self.feat
         if self.quantize:
             xy, scale, rot, feat = ste_quantize(xy, self.pos_bits), ste_quantize(
                 scale, self.scale_bits), ste_quantize(rot, self.rot_bits), ste_quantize(feat, self.feat_bits)
         begin = perf_counter()
+        #proiezione delle gaussiane sull'immagine usando gsplat
         tmp = project_gaussians_2d_scale_rot(xy, scale, rot, img_h, img_w, tile_bounds)
         xy, radii, conics, num_tiles_hit = tmp
+        #rasterize somma i contributi delle varie guassiane che coprono un pixel (è un KERNEL CUDA)
         if not self.disable_tiles:
+            # filtra solo le gaussiane presenti nel tile non in tutta l'immagine 
             enable_topk_norm = not self.disable_topk_norm
             tmp = xy, radii, conics, num_tiles_hit, feat, img_h, img_w, self.block_h, self.block_w, enable_topk_norm
             out_image = rasterize_gaussians_sum(*tmp)
@@ -442,19 +566,50 @@ class GaussianSplatting2D(nn.Module):
         return self.psnr_curr, self.ssim_curr
 
     def _get_total_loss(self, images):
+        """
+        Calcola la loss totale rispetto all'originale
+            L1 - MAE (media delle differenze assolute tra pixel): 1/n sum |y_predetto - y_gt|
+            L2 - MSE (media delle differenze al quadrato):  1/n sum (y_predetto - y_gt)^2
+            SSIM (Structural Similarity Index): (2*u_x*u_y+c1)(2*o_xy+c2)/(u_x^2+u_y^2+c1)(o_x^2*o_y^2+c2)
+        """
         self.total_loss = 0
         if self.l1_loss_ratio > 1e-7:
-            self.l1_loss = self.l1_loss_ratio * F.l1_loss(images, self.gt_images)
+            #calcola loss tra immagini e moltiplica tutti i pixel per la mascehera 
+            #(sarà 0) dove c'è lo sfondo
+            diff_l1 = torch.abs(images - self.gt_images) * self.mask
+            self.l1_loss = self.l1_loss_ratio * diff_l1.sum() / (self.mask.sum() * self.gt_images.shape[-1] + 1e-7)
             self.total_loss += self.l1_loss
         else:
             self.l1_loss = None
         if self.l2_loss_ratio > 1e-7:
-            self.l2_loss = self.l2_loss_ratio * F.mse_loss(images, self.gt_images)
+            # Differenza al quadrato punto a punto
+            diff_l2 = torch.pow(images - self.gt_images, 2) * self.mask
+            self.l2_loss = self.l2_loss_ratio * diff_l2.sum() / (self.mask.sum() * self.gt_images.shape[-1] + 1e-7)
             self.total_loss += self.l2_loss
         else:
             self.l2_loss = None
         if self.ssim_loss_ratio > 1e-7:
-            self.ssim_loss = self.ssim_loss_ratio * (1 - fused_ssim(images.unsqueeze(0), self.gt_images.unsqueeze(0)))
+            # Nota: SSIM lavora su finestre locali, non pixel singoli.
+            # Il modo più corretto è calcolare la SSIM map e poi mascherarla.
+            # Usiamo la versione di pytorch_msssim che restituisce la mappa se non diversamente specificato
+            from pytorch_msssim import ssim
+
+            # Calcoliamo la SSIM chiedendo di restituire la mappa (full=True)
+            # Portiamo in formato [B, C, H, W] richiesto dalla libreria
+            img1 = images.permute(2,0,1).unsqueeze(0)
+            img2 = self.gt_images.permute(2,0,1).unsqueeze(0)
+            
+            # ssim_map avrà valore 1 dove è identico, 0 dove è diverso
+            ssim_val, ssim_map = ssim(img1, img2, data_range=1.0, full=True)
+            
+            # Portiamo la mappa allo stesso formato della nostra maschera [H, W, 1]
+            ssim_map = ssim_map.squeeze(0).permute(1, 2, 0)
+            
+            # Applichiamo la maschera: consideriamo solo la SSIM delle zone del vaso
+            masked_ssim = ssim_map * self.mask
+
+            self.ssim_loss = self.ssim_loss_ratio * (1.0 - (masked_ssim.sum() / (self.mask.sum() * self.input_channels + 1e-7)))
+
             self.total_loss += self.ssim_loss
         else:
             self.ssim_loss = None
@@ -489,10 +644,12 @@ class GaussianSplatting2D(nn.Module):
             self.flip_final = flip_metric(images[:, :3], gt_images[:, :3]).item()
 
     def _log_images(self, log_final=False, plot_gaussians=False):
+        #train
         images = self._render_images(upsample=False)
         if log_final:
             path = f"{self.log_dir}/render_res-{self.img_h:d}x{self.img_w:d}"
             self._separate_and_save_images(images=images, channels=self.input_channels, path=path)
+        #evaluation 
         psnr, ssim = self._evaluate(log=False, upsample=False)
         path = f"{self.train_dir}/render_step-{self.step:d}_psnr-{psnr:.2f}_ssim-{ssim:.4f}_res-{self.img_h:d}x{self.img_w:d}"
         self._separate_and_save_images(images=images, channels=self.input_channels, path=path)
@@ -557,7 +714,14 @@ class GaussianSplatting2D(nn.Module):
             kernel_size = kernel_size + 1 if kernel_size % 2 == 0 else kernel_size
             gt_images = gaussian_blur(img=gt_images, kernel_size=kernel_size)
         diff_map = (gt_images - images).detach().clone()
+        #mappa errore 
         error_map = torch.pow(torch.abs(diff_map).mean(dim=0).reshape(-1), 2.0)
+        # Portiamo la maschera nello stesso formato flat di error_map (H*W)
+        flat_mask = self.mask.reshape(-1)
+        # Azzeriamo l'errore dove la maschera è 0
+        # In questo modo sample_prob sarà 0 per tutte le aree vuote
+        error_map = error_map * flat_mask
+        #probabilità per pixel
         sample_prob = (error_map / error_map.sum()).cpu().numpy()
         selected = np.random.choice(self.num_pixels, add_num, replace=False, p=sample_prob)
         # New Gaussians
