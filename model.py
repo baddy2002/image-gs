@@ -135,12 +135,13 @@ class GaussianSplatting2D(nn.Module):
         self._mask_empty_areas(args)
         
     def _mask_empty_areas(self, args):
-        # 1. Convertiamo il tensor GT (Ground Truth) in un'immagine numpy usabile da OpenCV
-        # gt_images è solitamente (H, W, C) e in range [0, 1]
         #FIXME: siamo sicuri?
-        img_np = (self.gt_images.cpu().numpy() * 255).astype(np.uint8)
-        h, w, _ = img_np.shape
 
+        # 1. Portiamo l'immagine in CPU, trasformiamola in Numpy e rendiamola "Contigua"
+        # Spostiamo i canali da (C, H, W) a (H, W, C) per OpenCV
+        img_np = (self.gt_images.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        img_np = np.ascontiguousarray(img_np) # FONDAMENTALE per evitare l'errore che hai avuto
+        h, w, _ = img_np.shape
         # 2. Creiamo una maschera inizialmente tutta bianca (255)
         # Lo scopo è colorare di nero (0) le zone esterne
         mask_np = np.ones((h, w), dtype=np.uint8) * 255
