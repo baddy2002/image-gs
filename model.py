@@ -645,7 +645,7 @@ class GaussianSplatting2D(nn.Module):
             log = False
         images = torch.pow(torch.clamp(self._render_images(upsample=upsample), 0.0, 1.0), 1.0/self.gamma)
         gt_images = torch.pow(self.gt_images_upsampled if upsample else self.gt_images, 1.0/self.gamma)
-        psnr = get_psnr(images, gt_images, self.mask).item()
+        psnr = get_psnr(images, gt_images, self.mask)
         ssim = fused_ssim(images.unsqueeze(0), gt_images.unsqueeze(0)).item()
         if log:
             self.psnr_curr, self.ssim_curr = psnr, ssim

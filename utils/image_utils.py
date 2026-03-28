@@ -43,8 +43,8 @@ def get_psnr(image1, image2, mask, max_value=1.0):
     mse_masked = torch.mean((active_pixels_pred - active_pixels_gt)**2)
     if mse_masked.item() <= 1e-7:
         return float('inf')
-    psnr_masked = 20 * torch.log10(1.0 / torch.sqrt(mse_masked)).item()
-    return psnr_masked
+    psnr_masked = 20 * torch.log10(1.0 / torch.sqrt(mse_masked))
+    return psnr_masked.item()
 
 
 def get_grid(h, w, x_lim=np.asarray([0, 1]), y_lim=np.asarray([0, 1])):
