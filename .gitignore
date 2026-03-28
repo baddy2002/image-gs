@@ -182,3 +182,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+
+comparations/
+
+temp.py

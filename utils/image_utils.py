@@ -34,12 +34,17 @@ GAUSSIAN_ZOOM = 5
 GAUSSIAN_COLOR = "#80ed99"
 
 
-def get_psnr(image1, image2, max_value=1.0):
-    mse = torch.mean((image1-image2)**2)
-    if mse.item() <= 1e-7:
+def get_psnr(image1, image2, mask, max_value=1.0):
+    # Prendiamo solo i pixel dove la maschera è attiva
+    # images e gt_images sono [C, H, W], mask è [1, H, W]
+    active_pixels_pred = image1[:, mask.squeeze(0) > 0.5]
+    active_pixels_gt = image2[:, mask.squeeze(0) > 0.5]
+    # Calcoliamo il MSE solo su questi pixel
+    mse_masked = torch.mean((active_pixels_pred - active_pixels_gt)**2)
+    if mse_masked.item() <= 1e-7:
         return float('inf')
-    psnr = 20*torch.log10(max_value/torch.sqrt(mse))
-    return psnr
+    psnr_masked = 20 * torch.log10(1.0 / torch.sqrt(mse_masked)).item()
+    return psnr_masked
 
 
 def get_grid(h, w, x_lim=np.asarray([0, 1]), y_lim=np.asarray([0, 1])):

@@ -168,6 +168,12 @@ class GaussianSplatting2D(nn.Module):
         if len(self.mask.shape) == 2:
             self.mask = self.mask.unsqueeze(-1)
 
+        # Portiamo la maschera a forma [1, H, W]
+        if len(self.mask.shape) == 2:
+            self.mask = self.mask.unsqueeze(0) 
+        elif self.mask.shape[-1] == 1: # Se era [H, W, 1]
+            self.mask = self.mask.permute(2, 0, 1)
+
         print(f"Maschera creata con Flood Fill. Pixel attivi: {int(self.mask.sum())}/{self.num_pixels}")
         
         cv2.imwrite(f"{self.log_dir}/uv_mask.png", mask_np)
@@ -595,32 +601,51 @@ class GaussianSplatting2D(nn.Module):
             # Usiamo la versione di pytorch_msssim che restituisce la mappa se non diversamente specificato
             from pytorch_msssim import ssim
 
-            # Calcoliamo la SSIM chiedendo di restituire la mappa (full=True)
-            # Portiamo in formato [B, C, H, W] richiesto dalla libreria
-            img1 = images.permute(2,0,1).unsqueeze(0)
-            img2 = self.gt_images.permute(2,0,1).unsqueeze(0)
+            # images e gt_images sono [C, H, W], fused_ssim vuole [B, C, H, W]
+            # Usiamo padding per mantenere le dimensioni ed evitare che l'immagine si rimpicciolisca
+            img1 = images.unsqueeze(0)
+            img2 = self.gt_images.unsqueeze(0)
             
-            # ssim_map avrà valore 1 dove è identico, 0 dove è diverso
-            ssim_val, ssim_map = ssim(img1, img2, data_range=1.0, full=True)
+            # Calcoliamo la SSIM. Se non passiamo parametri extra, 
+            # fused_ssim spesso restituisce il valore scalare.
+            # Per mascherarla davvero, calcoliamo la SSIM locale.
             
-            # Portiamo la mappa allo stesso formato della nostra maschera [H, W, 1]
-            ssim_map = ssim_map.squeeze(0).permute(1, 2, 0)
+            # OPZIONE PIÙ ROBUSTA PER LA TESI:
+            # Dato che SSIM è complessa da mascherare pixel per pixel (perché guarda i vicini),
+            # moltiplichiamo l'intera immagine per la maschera PRIMA del calcolo.
+            # Così i "buchi" diventano neri identici sia in predizione che in GT.
             
-            # Applichiamo la maschera: consideriamo solo la SSIM delle zone del vaso
-            masked_ssim = ssim_map * self.mask
-
-            self.ssim_loss = self.ssim_loss_ratio * (1.0 - (masked_ssim.sum() / (self.mask.sum() * self.input_channels + 1e-7)))
-
+            masked_img1 = img1 * self.mask
+            masked_img2 = img2 * self.mask
+            
+            # Ora calcoliamo la SSIM sulle immagini mascherate
+            ssim_val = fused_ssim(masked_img1, masked_img2)
+            
+            # La loss è 1 - SSIM
+            self.ssim_loss = self.ssim_loss_ratio * (1.0 - ssim_val)
             self.total_loss += self.ssim_loss
         else:
             self.ssim_loss = None
+
+        # FAI IN MODO CHE LE GAUSSIANE NON COPRANO LO SFONDO
+        # Vogliamo che dove la maschera è 0, l'immagine renderizzata sia 0.
+        inverse_mask = 1.0 - self.mask
+        
+         # Versione normalizzata (più stabile con cambio risoluzione)
+        num_bg_pixels = inverse_mask.sum() * self.input_channels + 1e-7
+        # Se c'è colore dove non dovrebbe, diamo una penalità forte.
+        background_loss = (images * inverse_mask).pow(2).sum() / num_bg_pixels
+        # Aggiungiamo questa penalità alla loss totale
+        # Il peso serve a dire "è molto grave se sporchi il nero"
+        self.total_loss += 10.0 * background_loss
+
 
     def _evaluate(self, log=True, upsample=False):
         if upsample:  # Do not log performance metrics for upsampled images
             log = False
         images = torch.pow(torch.clamp(self._render_images(upsample=upsample), 0.0, 1.0), 1.0/self.gamma)
         gt_images = torch.pow(self.gt_images_upsampled if upsample else self.gt_images, 1.0/self.gamma)
-        psnr = get_psnr(images, gt_images).item()
+        psnr = get_psnr(images, gt_images, self.mask).item()
         ssim = fused_ssim(images.unsqueeze(0), gt_images.unsqueeze(0)).item()
         if log:
             self.psnr_curr, self.ssim_curr = psnr, ssim
@@ -716,14 +741,16 @@ class GaussianSplatting2D(nn.Module):
             gt_images = gaussian_blur(img=gt_images, kernel_size=kernel_size)
         diff_map = (gt_images - images).detach().clone()
         #mappa errore 
-        error_map = torch.pow(torch.abs(diff_map).mean(dim=0).reshape(-1), 2.0)
-        # Portiamo la maschera nello stesso formato flat di error_map (H*W)
-        flat_mask = self.mask.reshape(-1)
+        error_map = torch.pow(torch.abs(diff_map).mean(dim=0), 2.0)
         # Azzeriamo l'errore dove la maschera è 0
         # In questo modo sample_prob sarà 0 per tutte le aree vuote
-        error_map = error_map * flat_mask
+        error_map = error_map * self.mask.squeeze(0)
+        # Rendiamolo un vettore piatto e portiamolo in CPU
+        error_flat = error_map.reshape(-1)
+    
         #probabilità per pixel
-        sample_prob = (error_map / error_map.sum()).cpu().numpy()
+        # Usiamo .flatten() per fare in modo che sia 1D per NumPy
+        sample_prob = (error_flat / (error_flat.sum() + 1e-10)).cpu().numpy().flatten()
         selected = np.random.choice(self.num_pixels, add_num, replace=False, p=sample_prob)
         # New Gaussians
         new_xy = self.pixel_xy.detach().clone()[selected]
