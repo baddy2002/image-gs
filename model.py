@@ -144,23 +144,25 @@ class GaussianSplatting2D(nn.Module):
         h, w, _ = img_np.shape
         # 2. Creiamo una maschera inizialmente tutta bianca (255)
         # Lo scopo è colorare di nero (0) le zone esterne
-        mask_np = np.ones((h, w), dtype=np.uint8) * 255
+        flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
 
-        # 3. Definiamo i punti di partenza (i 4 angoli)
-        seeds = [(0, 0), (0, w-1), (h-1, 0), (h-1, w-1)]
+        # 3. Definiamo i punti di partenza (i 4 angoli) e metà dei bordi
+        seeds = [(0, 0), (0, w-1), (h-1, 0), (h-1, w-1), (h//2, 0), (h//2, w-1)]
 
         # 4. Flood Fill: partiamo dagli angoli. 
         # Se il colore è simile (tolleranza 2,2,2), lo consideriamo "vuoto"
-        temp_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
         for seed in seeds:
-            cv2.floodFill(img_np, temp_mask, seed, (0, 0, 0), 
-                        loDiff=(2, 2, 2), upDiff=(2, 2, 2))
+        cv2.floodFill(img_np, flood_mask, seed, 255, 
+                    loDiff=(1, 1, 1), upDiff=(1, 1, 1), 
+                    flags=cv2.FLOODFILL_FIXED_RANGE)
 
         # La temp_mask di OpenCV ha 1 dove ha riempito. Noi vogliamo l'opposto.
         # Prendiamo la zona riempita (background) e la mettiamo a 0 nella nostra maschera
-        filled_area = temp_mask[1:-1, 1:-1]
-        mask_np[filled_area == 1] = 0
-
+        background_mask = flood_mask[1:-1, 1:-1]
+        mask_np = cv2.bitwise_not(background_mask)
+        kernel = np.ones((3, 3), np.uint8)
+        mask_np = cv2.erode(mask_np, kernel, iterations=1)
+        mask_np = cv2.dilate(mask_np, kernel, iterations=1)
         # 5. Riportiamo la maschera in PyTorch e sulla GPU
         self.mask = torch.from_numpy(mask_np).float().to(self.gt_images.device) / 255.0
         
@@ -631,8 +633,11 @@ class GaussianSplatting2D(nn.Module):
         # Vogliamo che dove la maschera è 0, l'immagine renderizzata sia 0.
         inverse_mask = 1.0 - self.mask
         
-         # Versione normalizzata (più stabile con cambio risoluzione)
-        num_bg_pixels = inverse_mask.sum() * self.input_channels + 1e-7
+        # Versione normalizzata (più stabile con cambio risoluzione)
+        channels = self.input_channels
+        if isinstance(channels, list):
+            channels = channels[0]
+        num_bg_pixels = float(torch.sum(inverse_mask)) * channels + 1e-7
         # Se c'è colore dove non dovrebbe, diamo una penalità forte.
         background_loss = (images * inverse_mask).pow(2).sum() / num_bg_pixels
         # Aggiungiamo questa penalità alla loss totale
