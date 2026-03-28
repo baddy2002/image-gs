@@ -152,17 +152,41 @@ class GaussianSplatting2D(nn.Module):
         # 4. Flood Fill: partiamo dagli angoli. 
         # Se il colore è simile (tolleranza 2,2,2), lo consideriamo "vuoto"
         for seed in seeds:
-        cv2.floodFill(img_np, flood_mask, seed, 255, 
-                    loDiff=(1, 1, 1), upDiff=(1, 1, 1), 
-                    flags=cv2.FLOODFILL_FIXED_RANGE)
+            cv2.floodFill(img_np, flood_mask, seed, (0, 0, 0), 
+                        loDiff=(2, 2, 2), upDiff=(2, 2, 2), 
+                        flags=4 | cv2.FLOODFILL_FIXED_RANGE)
+            
+        # Creiamo una mappa di quello che è MOLTO nero ma non è ancora stato riempito
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        # Solo pixel quasi neri (soglia bassa < 4) e che la flood_mask attuale segna come "non riempiti" (0)
+        potential_holes = (gray < 4) & (flood_mask[1:-1, 1:-1] == 0)
+        potential_holes = potential_holes.astype(np.uint8) * 255
+
+        # Troviamo i centri di queste "isole nere" per non lanciare 1000 floodfill inutili
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(potential_holes, connectivity=4)
+
+        # Per ogni isola nera trovata, lanciamo un piccolo flood fill
+        # Saltiamo la label 0 (che è il background della mappa potential_holes)
+        for i in range(1, num_labels):
+            # Se l'area nera è troppo piccola (es. meno di 2 pixel), forse è solo rumore/dettaglio scuro
+            if stats[i, cv2.CC_STAT_AREA] < 2: 
+                continue
+            
+            seed_internal = (int(centroids[i][0]), int(centroids[i][1]))
+            cv2.floodFill(img_np, flood_mask, seed_internal, 255, 
+                        loDiff=(1, 1, 1), upDiff=(1, 1, 1), 
+                        flags=4 | cv2.FLOODFILL_FIXED_RANGE)
 
         # La temp_mask di OpenCV ha 1 dove ha riempito. Noi vogliamo l'opposto.
         # Prendiamo la zona riempita (background) e la mettiamo a 0 nella nostra maschera
         background_mask = flood_mask[1:-1, 1:-1]
-        mask_np = cv2.bitwise_not(background_mask)
+        # Creiamo la maschera finale: 255 dove NON è background, 0 dove LO È
+        mask_np = np.ones((h, w), dtype=np.uint8) * 255
+        mask_np[background_mask == 1] = 0
         kernel = np.ones((3, 3), np.uint8)
-        mask_np = cv2.erode(mask_np, kernel, iterations=1)
-        mask_np = cv2.dilate(mask_np, kernel, iterations=1)
+        mask_np = cv2.erode(mask_np, kernel, iterations=2)
+        mask_np = cv2.dilate(mask_np, kernel, iterations=3)
+
         # 5. Riportiamo la maschera in PyTorch e sulla GPU
         self.mask = torch.from_numpy(mask_np).float().to(self.gt_images.device) / 255.0
         
@@ -628,22 +652,6 @@ class GaussianSplatting2D(nn.Module):
             self.total_loss += self.ssim_loss
         else:
             self.ssim_loss = None
-
-        # FAI IN MODO CHE LE GAUSSIANE NON COPRANO LO SFONDO
-        # Vogliamo che dove la maschera è 0, l'immagine renderizzata sia 0.
-        inverse_mask = 1.0 - self.mask
-        
-        # Versione normalizzata (più stabile con cambio risoluzione)
-        channels = self.input_channels
-        if isinstance(channels, list):
-            channels = channels[0]
-        num_bg_pixels = float(torch.sum(inverse_mask)) * channels + 1e-7
-        # Se c'è colore dove non dovrebbe, diamo una penalità forte.
-        background_loss = (images * inverse_mask).pow(2).sum() / num_bg_pixels
-        # Aggiungiamo questa penalità alla loss totale
-        # Il peso serve a dire "è molto grave se sporchi il nero"
-        self.total_loss += 10.0 * background_loss
-
 
     def _evaluate(self, log=True, upsample=False):
         if upsample:  # Do not log performance metrics for upsampled images
