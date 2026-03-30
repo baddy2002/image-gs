@@ -159,7 +159,7 @@ class GaussianSplatting2D(nn.Module):
         # Creiamo una mappa di quello che è MOLTO nero ma non è ancora stato riempito
         gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
         # Solo pixel quasi neri (soglia bassa < 4) e che la flood_mask attuale segna come "non riempiti" (0)
-        potential_holes = (gray < 4) & (flood_mask[1:-1, 1:-1] == 0)
+        potential_holes = (gray < 8) & (flood_mask[1:-1, 1:-1] == 0)
         potential_holes = potential_holes.astype(np.uint8) * 255
 
         # Troviamo i centri di queste "isole nere" per non lanciare 1000 floodfill inutili
@@ -174,7 +174,7 @@ class GaussianSplatting2D(nn.Module):
             
             seed_internal = (int(centroids[i][0]), int(centroids[i][1]))
             cv2.floodFill(img_np, flood_mask, seed_internal, 255, 
-                        loDiff=(1, 1, 1), upDiff=(1, 1, 1), 
+                        loDiff=(2, 2, 2), upDiff=(2, 2, 2), 
                         flags=4 | cv2.FLOODFILL_FIXED_RANGE)
 
         # La temp_mask di OpenCV ha 1 dove ha riempito. Noi vogliamo l'opposto.
@@ -184,11 +184,18 @@ class GaussianSplatting2D(nn.Module):
         mask_np = np.ones((h, w), dtype=np.uint8) * 255
         mask_np[background_mask == 1] = 0
         kernel = np.ones((3, 3), np.uint8)
-        mask_np = cv2.erode(mask_np, kernel, iterations=2)
-        mask_np = cv2.dilate(mask_np, kernel, iterations=3)
+        # Troviamo il bordo esterno dilatando l'oggetto di 1 solo pixel
+        dilated = cv2.dilate(mask_np, kernel, iterations=1)   
+        # B. Sottraiamo l'originale dal dilatato per ottenere solo il contorno (1 pixel di spessore)
+        border = cv2.subtract(dilated, mask_np)
+        #Sottraiamo il bordo dall'originale
+        # Questo crea un "solco" nero di 1 pixel lungo tutto il perimetro.
+        # I pezzi che si toccavano ora sono separati da un pixel nero, 
+        # ma i buchi interni non vengono toccati perché il bordo è solo esterno!
+        mask_final = cv2.subtract(mask_np, border)
 
         # 5. Riportiamo la maschera in PyTorch e sulla GPU
-        self.mask = torch.from_numpy(mask_np).float().to(self.gt_images.device) / 255.0
+        self.mask = torch.from_numpy(mask_final).float().to(self.gt_images.device) / 255.0
         
         # Se la maschera deve avere la stessa forma di gt_images (H, W, 1)
         if len(self.mask.shape) == 2:
