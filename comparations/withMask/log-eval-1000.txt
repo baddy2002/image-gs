@@ -1,12 +1,12 @@
-[2026/03/28 21:34:53] Start rendering 1000 Gaussians for 'textures/castpol01_small.png'
-[2026/03/28 21:34:53] ***********************************************
-Maschera creata con Flood Fill. Pixel attivi: 817049/1048576
-[2026/03/28 21:34:53] Uncompressed: 3145.73 KB | 24.000 bpp | 8.000 bppc
-[2026/03/28 21:34:53] Compressed: 16.00 KB | 0.122 bpp | 0.041 bppc
-[2026/03/28 21:34:53] Compression rate: 196.61x | 0.51%
-[2026/03/28 21:34:53] ***********************************************
-[2026/03/28 21:34:53] Checkpoint 'results/test/castpol01_small/num-1000_inv-scale-5.0_bits-16-16-16-16_top-10_g-0.3_l1-1.0_l2-0.0_ssim-0.1_decay-1-10.0_prog/checkpoints/ckpt_step-4100.pt' successfully loaded
-[2026/03/28 21:34:53] ***********************************************
-[2026/03/28 21:34:55] Step: 4100 | Time: 0.040867 s
-[2026/03/28 21:34:55] Rendering at resolution (3000, 3000) completed
-[2026/03/28 21:34:55] ***********************************************
+[2026/03/30 19:45:16] Start rendering 1000 Gaussians for 'textures/castpol01_small.png'
+[2026/03/30 19:45:16] ***********************************************
+Maschera creata con Flood Fill. Pixel attivi: 792130/1048576
+[2026/03/30 19:45:17] Uncompressed: 3145.73 KB | 24.000 bpp | 8.000 bppc
+[2026/03/30 19:45:17] Compressed: 16.00 KB | 0.122 bpp | 0.041 bppc
+[2026/03/30 19:45:17] Compression rate: 196.61x | 0.51%
+[2026/03/30 19:45:17] ***********************************************
+[2026/03/30 19:45:17] Checkpoint 'results/test/castpol01_small/num-1000_inv-scale-5.0_bits-16-16-16-16_top-10_g-0.3_l1-1.0_l2-0.0_ssim-0.1_decay-1-10.0_prog/checkpoints/ckpt_step-4100.pt' successfully loaded
+[2026/03/30 19:45:17] ***********************************************
+[2026/03/30 19:45:18] Step: 4100 | Time: 0.035950 s
+[2026/03/30 19:45:18] Rendering at resolution (3000, 3000) completed
+[2026/03/30 19:45:18] ***********************************************

@@ -211,7 +211,18 @@ class GaussianSplatting2D(nn.Module):
         
         cv2.imwrite(f"{self.log_dir}/uv_mask.png", mask_np)
 
-        #TODO: check it
+        if args.use_mask:
+            # Usiamo la maschera precisa per il piazzamento
+            spawn_mask_np = mask_final
+            self.worklog.info("Spawn Mask: Utilizzo maschera UV precisa.")
+        else:
+            # Usiamo tutta l'immagine (maschera bianca)
+            spawn_mask_np = np.ones((h, w), dtype=np.uint8) * 255
+            self.worklog.info("Spawn Mask: Utilizzo intera immagine (no mask).")
+
+        self.spawn_mask = torch.from_numpy(spawn_mask_np).float().to(self.device) / 255.0
+        self.spawn_mask = self.spawn_mask.view(1, h, w)
+        cv2.imwrite(f"{self.log_dir}/uv_spawn_mask.png", spawn_mask_np)
 
 
     def _load_target_images(self, path, downsample_ratio=None):
@@ -275,8 +286,8 @@ class GaussianSplatting2D(nn.Module):
         
 
         # 1. Troviamo dove la maschera è "bianca" (valore > 0.5)
-        # self.mask è (H, W, 1). Cerchiamo gli indici (y, x)
-        coords = torch.nonzero(self.mask.squeeze(-1) > 0.5)
+        # self.spawn_mask è (H, W, 1). Cerchiamo gli indici (y, x)
+        coords = torch.nonzero(self.spawn_mask.squeeze(-1) > 0.5)
         # 2. Calcoliamo quante gaussiane iniziali servono davvero
         num_to_init = self.num_gaussians
 
@@ -764,7 +775,7 @@ class GaussianSplatting2D(nn.Module):
         error_map = torch.pow(torch.abs(diff_map).mean(dim=0), 2.0)
         # Azzeriamo l'errore dove la maschera è 0
         # In questo modo sample_prob sarà 0 per tutte le aree vuote
-        error_map = error_map * self.mask.squeeze(0)
+        error_map = error_map * self.spawn_mask.squeeze(0)
         # Rendiamolo un vettore piatto e portiamolo in CPU
         error_flat = error_map.reshape(-1)
     
