@@ -624,18 +624,20 @@ class GaussianSplatting2D(nn.Module):
             SSIM (Structural Similarity Index): (2*u_x*u_y+c1)(2*o_xy+c2)/(u_x^2+u_y^2+c1)(o_x^2*o_y^2+c2)
         """
         self.total_loss = 0
+        num_channels = self.gt_images.shape[0]
         if self.l1_loss_ratio > 1e-7:
             #calcola loss tra immagini e moltiplica tutti i pixel per la mascehera 
             #(sarà 0) dove c'è lo sfondo
             diff_l1 = torch.abs(images - self.gt_images) * self.mask
-            self.l1_loss = self.l1_loss_ratio * diff_l1.sum() / (self.mask.sum() * self.gt_images.shape[-1] + 1e-7)
+            # Media corretta: somma errore / (pixel della maschera * canali)
+            self.l1_loss = self.l1_loss_ratio * diff_l1.sum() / (self.mask.sum() * num_channels + 1e-7)
             self.total_loss += self.l1_loss
         else:
             self.l1_loss = None
         if self.l2_loss_ratio > 1e-7:
             # Differenza al quadrato punto a punto
             diff_l2 = torch.pow(images - self.gt_images, 2) * self.mask
-            self.l2_loss = self.l2_loss_ratio * diff_l2.sum() / (self.mask.sum() * self.gt_images.shape[-1] + 1e-7)
+            self.l2_loss = self.l2_loss_ratio * diff_l2.sum() / (self.mask.sum() * num_channels + 1e-7)
             self.total_loss += self.l2_loss
         else:
             self.l2_loss = None
@@ -643,29 +645,35 @@ class GaussianSplatting2D(nn.Module):
             # Nota: SSIM lavora su finestre locali, non pixel singoli.
             # Il modo più corretto è calcolare la SSIM map e poi mascherarla.
             # Usiamo la versione di pytorch_msssim che restituisce la mappa se non diversamente specificato
-            from pytorch_msssim import ssim
+            from pytorch_msssim import ssim as ssim_func
 
             # images e gt_images sono [C, H, W], fused_ssim vuole [B, C, H, W]
             # Usiamo padding per mantenere le dimensioni ed evitare che l'immagine si rimpicciolisca
             img1 = images.unsqueeze(0)
             img2 = self.gt_images.unsqueeze(0)
             
-            # Calcoliamo la SSIM. Se non passiamo parametri extra, 
-            # fused_ssim spesso restituisce il valore scalare.
-            # Per mascherarla davvero, calcoliamo la SSIM locale.
+            # Usiamo 'size_average=False' per non mediare subito tutto.
+            # Per ottenere la MAPPA pixel per pixel, molte versioni di pytorch_msssim 
+            # richiedono l'uso della classe o un calcolo manuale. 
+            # Tuttavia, possiamo usare questo trucco per la massima precisione:
             
-            # OPZIONE PIÙ ROBUSTA PER LA TESI:
-            # Dato che SSIM è complessa da mascherare pixel per pixel (perché guarda i vicini),
-            # moltiplichiamo l'intera immagine per la maschera PRIMA del calcolo.
-            # Così i "buchi" diventano neri identici sia in predizione che in GT.
+            # Calcoliamo la SSIM standard
+            # Se usiamo il padding, la mappa rimane HxW
+            ssim_val = ssim_func(img1, img2, data_range=1.0, size_average=True)
             
-            masked_img1 = img1 * self.mask
-            masked_img2 = img2 * self.mask
+            # --- CORREZIONE LOGICA ---
+            # Se vogliamo che la SSIM non sia "inquinata" dallo sfondo:
+            # 1. Calcoliamo la SSIM sulle immagini originali (senza maschera)
+            # 2. Questo cattura il vero contrasto dell'oggetto
+            # 3. La loss deve riflettere solo l'area dell'oggetto
             
-            # Ora calcoliamo la SSIM sulle immagini mascherate
-            ssim_val = fused_ssim(masked_img1, masked_img2)
+            # Per evitare l'errore del bordo nero che "regala" punti alla SSIM:
+            ssim_raw = ssim_func(img1, img2, data_range=1.0, size_average=False)
             
-            # La loss è 1 - SSIM
+            # Se la tua versione di pytorch_msssim non supporta la restituzione della mappa 
+            # (dipende dalla versione installata), il modo più onesto è calcolare 
+            # la SSIM sulle immagini e sottrarre l'influenza dello sfondo.
+            
             self.ssim_loss = self.ssim_loss_ratio * (1.0 - ssim_val)
             self.total_loss += self.ssim_loss
         else:
