@@ -685,7 +685,7 @@ class GaussianSplatting2D(nn.Module):
         images = torch.pow(torch.clamp(self._render_images(upsample=upsample), 0.0, 1.0), 1.0/self.gamma)
         gt_images = torch.pow(self.gt_images_upsampled if upsample else self.gt_images, 1.0/self.gamma)
         psnr = get_psnr(images, gt_images, self.mask)
-        ssim = fused_ssim(images.unsqueeze(0), gt_images.unsqueeze(0)).item()
+        ssim = self._get_masked_ssim(images, gt_images)
         if log:
             self.psnr_curr, self.ssim_curr = psnr, ssim
             loss_results = f"Loss: {self.total_loss.item():.4f}"
@@ -695,6 +695,22 @@ class GaussianSplatting2D(nn.Module):
             time_results = f"Total: {self.total_time_accum:.2f} s | Render: {self.render_time_accum:.2f} s"
             self.worklog.info(f"Step: {self.step:d} | {time_results} | {loss_results} | PSNR: {self.psnr_curr:.2f} | SSIM: {self.ssim_curr:.4f}")
         return psnr, ssim
+
+
+    def _get_masked_ssim(self, images, gt_images):
+        mask_2d = self.mask.squeeze(0)  # [H, W]
+        ys, xs = torch.where(mask_2d > 0.5)
+
+        y_min, y_max = ys.min(), ys.max()
+        x_min, x_max = xs.min(), xs.max()
+        cropped_img = images[:, y_min:y_max+1, x_min:x_max+1]
+        cropped_gt  = gt_images[:, y_min:y_max+1, x_min:x_max+1]
+
+        ssim = fused_ssim(
+            cropped_img.unsqueeze(0),
+            cropped_gt.unsqueeze(0)
+        ).item()
+        return ssim
 
     def _evaluate_extra(self):
         images = torch.pow(torch.clamp(self._render_images(upsample=False), 0.0, 1.0), 1.0/self.gamma)[None, ...]
