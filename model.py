@@ -697,20 +697,63 @@ class GaussianSplatting2D(nn.Module):
         return psnr, ssim
 
 
-    def _get_masked_ssim(self, images, gt_images):
-        mask_2d = self.mask.squeeze(0)  # [H, W]
-        ys, xs = torch.where(mask_2d > 0.5)
+    def _get_masked_ssim(self, images, gt_images, window_size=11):
+        import torch.nn.functional as F
 
-        y_min, y_max = ys.min(), ys.max()
-        x_min, x_max = xs.min(), xs.max()
-        cropped_img = images[:, y_min:y_max+1, x_min:x_max+1]
-        cropped_gt  = gt_images[:, y_min:y_max+1, x_min:x_max+1]
+        # Assicuriamoci che siano [1, C, H, W]
+        img1 = images.unsqueeze(0) if images.dim() == 3 else images
+        img2 = gt_images.unsqueeze(0) if gt_images.dim() == 3 else gt_images
+        mask = self.mask.unsqueeze(0) if self.mask.dim() == 3 else self.mask
+        
+        C = img1.shape[1]
+        device = img1.device
 
-        ssim = fused_ssim(
-            cropped_img.unsqueeze(0),
-            cropped_gt.unsqueeze(0)
-        ).item()
-        return ssim
+        # 1. Creiamo la finestra Gaussiana per la SSIM
+        def gaussian(size, sigma):
+            gauss = torch.exp(torch.tensor([-(x - size // 2)**2 / float(2 * sigma**2) for x in range(size)]))
+            return gauss / gauss.sum()
+
+        _1D_window = gaussian(window_size, 1.5).unsqueeze(1).to(device)
+        _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
+        window = _2D_window.expand(C, 1, window_size, window_size).contiguous()
+        
+        # Calcoliamo quanto la finestra è "dentro" la maschera.
+        # Usiamo la stessa finestra della SSIM sulla maschera stessa.
+        mask_coverage = F.conv2d(mask, window, padding=window_size//2, groups=1)
+        
+        # Creiamo una "Valid Map": consideriamo validi solo i pixel dove 
+        # la finestra 11x11 cade COMPLETAMENTE (o quasi) dentro la maschera (es. > 0.9)
+        # Questo elimina i bordi che "regalano" 1.0 alla SSIM.
+        valid_map = (mask_coverage > 0.9).float()
+
+        # 2. Calcoliamo le componenti della SSIM (medie, varianze, covarianza)
+        mu1 = F.conv2d(img1, window, padding=window_size//2, groups=C)
+        mu2 = F.conv2d(img2, window, padding=window_size//2, groups=C)
+
+        mu1_sq = mu1.pow(2)
+        mu2_sq = mu2.pow(2)
+        mu1_mu2 = mu1 * mu2
+
+        sigma1_sq = F.conv2d(img1 * img1, window, padding=window_size//2, groups=C) - mu1_sq
+        sigma2_sq = F.conv2d(img2 * img2, window, padding=window_size//2, groups=C) - mu2_sq
+        sigma12 = F.conv2d(img1 * img2, window, padding=window_size//2, groups=C) - mu1_mu2
+
+        C1 = 0.01**2
+        C2 = 0.03**2
+
+        # 3. Generiamo la mappa SSIM completa [1, C, H, W]
+        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+
+        # 4. MEDIA SOLO SULLA MASCHERA
+        # Moltiplichiamo la mappa per la maschera per annullare lo sfondo
+        masked_ssim_sum = (ssim_map * valid_map).sum()
+        
+        # Dividiamo per il numero di pixel attivi nella maschera (per ogni canale)
+        num_active_pixels = valid_map.sum() * C
+        
+        actual_ssim = masked_ssim_sum / (num_active_pixels + 1e-8)
+        
+        return actual_ssim.item()
 
     def _evaluate_extra(self):
         images = torch.pow(torch.clamp(self._render_images(upsample=False), 0.0, 1.0), 1.0/self.gamma)[None, ...]
