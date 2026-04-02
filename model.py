@@ -244,6 +244,7 @@ class GaussianSplatting2D(nn.Module):
         self.scale_bits = args.scale_bits
         self.rot_bits = args.rot_bits
         self.feat_bits = args.feat_bits
+        self.beta_bits = args.beta_bits
 
     def _init_gaussians(self, args):
         """
@@ -307,6 +308,8 @@ class GaussianSplatting2D(nn.Module):
         self.feat_dim = sum(self.input_channels)
         self.feat = nn.Parameter(torch.rand(self.num_gaussians, self.feat_dim, dtype=self.dtype, device=self.device), requires_grad=True)
         self.vis_feat = nn.Parameter(torch.rand_like(self.feat), requires_grad=False)  # Only used for Gaussian ID visualization
+        #parametro beta per beta splatting
+        self.beta = nn.Parameter(torch.ones(self.num_gaussians, 1, dtype=self.dtype, device=self.device), requires_grad=True)
         self._log_compression_rate()
 
     def _log_compression_rate(self):
@@ -315,7 +318,7 @@ class GaussianSplatting2D(nn.Module):
             1 - calcola dimensione dell'immaggine non compressa: pixel*num_canali
 
             2 - calcola dimensione(bit) compressa: 
-                - num_gaussian
+                - num_gaussian (o beta kernel)
                 - 2*self.pos_bits (per x e per y)
                 - 2*self.scale_bits 
                         Poiché è un'ellisse e non un cerchio perfetto, 
@@ -325,7 +328,10 @@ class GaussianSplatting2D(nn.Module):
                         In 3D sarebbe molto più complesso (quaternioni), ma in 2D è un singolo scalare.
                 - self.feat_dim * self.feat_bits  
                         numero canali * numero bit per canale 
+                - self.beta_bits
+                        numero bit per il parametro beta di beta splatting (un solo beta per kernel)
         """
+        #todo: aggiungi beta bits
         bytes_uncompressed = 0.0
         curr_channel = 0
         for num_channels, bit_depth in zip(self.input_channels, self.bit_depths):
@@ -336,7 +342,7 @@ class GaussianSplatting2D(nn.Module):
             bpp_uncompressed += float(num_channels) * bit_depth
         bppc_uncompressed = bpp_uncompressed / self.feat_dim
         self.worklog.info(f"Uncompressed: {bytes_uncompressed/1e3:.2f} KB | {bpp_uncompressed:.3f} bpp | {bppc_uncompressed:.3f} bppc")
-        bits_compressed = (2*self.pos_bits + 2*self.scale_bits + self.rot_bits + self.feat_dim*self.feat_bits) * self.total_num_gaussians
+        bits_compressed = (2*self.pos_bits + 2*self.scale_bits + self.rot_bits + self.feat_dim*self.feat_bits+ self.beta_bits) * self.total_num_gaussians
         bytes_compressed = bits_compressed / 8.0
         #JPEG sui 1.5/2.0 
         bpp_compressed = float(bits_compressed) / self.num_pixels
@@ -370,11 +376,14 @@ class GaussianSplatting2D(nn.Module):
         self.scale_lr = args.scale_lr
         self.rot_lr = args.rot_lr
         self.feat_lr = args.feat_lr
+        self.beta_lr = args.beta_lr
         #Adam per ottimizzare
         self.optimizer = torch.optim.Adam([{'params': self.xy, 'lr': self.pos_lr},
                                            {'params': self.scale, 'lr': self.scale_lr},
                                            {'params': self.rot, 'lr': self.rot_lr},
-                                           {'params': self.feat, 'lr': self.feat_lr}])
+                                           {'params': self.feat, 'lr': self.feat_lr},
+                                           {'params': self.beta, 'lr': self.beta_lr}
+                                           ])
         self.disable_lr_schedule = args.disable_lr_schedule
         if not self.disable_lr_schedule:
             self.decay_ratio = args.decay_ratio
@@ -477,6 +486,7 @@ class GaussianSplatting2D(nn.Module):
             self.scale.copy_(ste_quantize(self.scale, self.scale_bits))
             self.rot.copy_(ste_quantize(self.rot, self.rot_bits))
             self.feat.copy_(ste_quantize(self.feat, self.feat_bits))
+            self.beta.copy_(ste_quantize(self.beta, self.beta_bits))
 
     def render(self, render_height=None):
         """
@@ -520,21 +530,22 @@ class GaussianSplatting2D(nn.Module):
         # recupera i parametri eventualmente quantizzati
         scale = self._get_scale(upsample_ratio=upsample_ratio)
         xy, rot, feat = self.xy, self.rot, self.feat
+        beta_for_cuda = F.softplus(self.beta)
         if self.quantize:
-            xy, scale, rot, feat = ste_quantize(xy, self.pos_bits), ste_quantize(
-                scale, self.scale_bits), ste_quantize(rot, self.rot_bits), ste_quantize(feat, self.feat_bits)
+            xy, scale, rot, feat, beta_for_cuda = ste_quantize(xy, self.pos_bits), ste_quantize(
+                scale, self.scale_bits), ste_quantize(rot, self.rot_bits), ste_quantize(feat, self.feat_bits), ste_quantize(beta_for_cuda, self.beta_bits)
         begin = perf_counter()
-        #proiezione delle gaussiane sull'immagine usando gsplat
-        tmp = project_gaussians_2d_scale_rot(xy, scale, rot, img_h, img_w, tile_bounds)
+        #proiezione delle gaussiane(beta kernel) sull'immagine usando gsplat
+        tmp = project_gaussians_2d_scale_rot(xy, scale, rot, beta_for_cuda, img_h, img_w, tile_bounds)
         xy, radii, conics, num_tiles_hit = tmp
-        #rasterize somma i contributi delle varie guassiane che coprono un pixel (è un KERNEL CUDA)
+        #rasterize somma i contributi delle varie guassiane(beta kernel) che coprono un pixel (è un KERNEL CUDA)
         if not self.disable_tiles:
-            # filtra solo le gaussiane presenti nel tile non in tutta l'immagine 
+            # filtra solo le gaussiane(beta kernel) presenti nel tile non in tutta l'immagine 
             enable_topk_norm = not self.disable_topk_norm
-            tmp = xy, radii, conics, num_tiles_hit, feat, img_h, img_w, self.block_h, self.block_w, enable_topk_norm
+            tmp = xy, radii, conics, num_tiles_hit, feat, beta_for_cuda, img_h, img_w, self.block_h, self.block_w, enable_topk_norm
             out_image = rasterize_gaussians_sum(*tmp)
         else:
-            tmp = xy, conics, feat, img_h, img_w
+            tmp = xy, conics, feat, beta_for_cuda, img_h, img_w
             out_image = rasterize_gaussians_no_tiles(*tmp)
         render_time = perf_counter() - begin
         if benchmark:
@@ -553,18 +564,19 @@ class GaussianSplatting2D(nn.Module):
     def _visualize_gaussian_id(self, img_h, img_w, tile_bounds, upsample_ratio=None):
         scale = self._get_scale(upsample_ratio=upsample_ratio)
         xy, rot, feat = self.xy, self.rot, self.feat
+        beta_for_cuda = F.softplus(self.beta)
         if self.quantize:
-            xy, scale, rot, feat = ste_quantize(xy, self.pos_bits), ste_quantize(
-                scale, self.scale_bits), ste_quantize(rot, self.rot_bits), ste_quantize(feat, self.feat_bits)
+            xy, scale, rot, feat, beta_for_cuda = ste_quantize(xy, self.pos_bits), ste_quantize(
+                scale, self.scale_bits), ste_quantize(rot, self.rot_bits), ste_quantize(feat, self.feat_bits), ste_quantize(beta_for_cuda, self.beta_bits)
         feat = self.vis_feat * feat.norm(dim=-1, keepdim=True)
-        tmp = project_gaussians_2d_scale_rot(xy, scale, rot, img_h, img_w, tile_bounds)
+        tmp = project_gaussians_2d_scale_rot(xy, scale, rot, beta_for_cuda, img_h, img_w, tile_bounds)
         xy, radii, conics, num_tiles_hit = tmp
         if not self.disable_tiles:
             enable_topk_norm = not self.disable_topk_norm
-            tmp = xy, radii, conics, num_tiles_hit, feat, img_h, img_w, self.block_h, self.block_w, enable_topk_norm
+            tmp = xy, radii, conics, num_tiles_hit, feat, beta_for_cuda, img_h, img_w, self.block_h, self.block_w, enable_topk_norm
             out_image = rasterize_gaussians_sum(*tmp)
         else:
-            tmp = xy, conics, feat, img_h, img_w
+            tmp = xy, conics, feat, beta_for_cuda, img_h, img_w
             out_image = rasterize_gaussians_no_tiles(*tmp)
         out_image = out_image.view(-1, img_h, img_w, self.feat_dim).permute(0, 3, 1, 2).contiguous()
         return out_image.squeeze(dim=0)
@@ -834,6 +846,9 @@ class GaussianSplatting2D(nn.Module):
         self.rot = nn.Parameter(all_rot, requires_grad=True)
         self.feat = nn.Parameter(all_feat, requires_grad=True)
         self.vis_feat = nn.Parameter(all_vis_feat, requires_grad=False)
+        #parametro beta per beta splatting (init a 1 ma con softplus diventa 1.31)
+        self.beta = nn.Parameter(torch.ones(self.num_gaussians, 1, dtype=self.dtype, device=self.device), requires_grad=True)
+        
         # Plot Gaussians
         if plot_gaussians:
             path = f"{self.train_dir}/add-gaussians_step-{self.step:d}_num-{self.num_gaussians:d}_res-{self.img_h:d}x{self.img_w:d}"
@@ -845,6 +860,8 @@ class GaussianSplatting2D(nn.Module):
         self.optimizer = torch.optim.Adam([{'params': self.xy, 'lr': self.pos_lr},
                                            {'params': self.scale, 'lr': self.scale_lr},
                                            {'params': self.rot, 'lr': self.rot_lr},
-                                           {'params': self.feat, 'lr': self.feat_lr}])
+                                           {'params': self.feat, 'lr': self.feat_lr},
+                                           {'params': self.beta, 'lr': self.beta_lr}
+                                           ])
         self.worklog.info(f"Step: {self.step:d} | Adding {add_num:d} Gaussians ({self.num_gaussians-add_num:d} -> {self.num_gaussians:d})")
         self.worklog.info("***********************************************")

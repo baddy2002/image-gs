@@ -41,6 +41,7 @@ extra_cflags = ["-O3"]
 extra_cuda_cflags = ["-O3"]
 
 _C = None
+# prendi tutti i file .cu e .cpp nella cartella csrc
 sources = list(glob.glob(os.path.join(PATH, "csrc/*.cu"))) + list(
     glob.glob(os.path.join(PATH, "csrc/*.cpp"))
 )

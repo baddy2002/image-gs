@@ -17,6 +17,7 @@ def rasterize_gaussians_sum(
     conics: Float[Tensor, "*batch 3"],
     num_tiles_hit: Int[Tensor, "*batch 1"],
     colors: Float[Tensor, "*batch channels"],
+    beta: Float[Tensor, "*batch 1"],
     img_height: int,
     img_width: int,
     BLOCK_H: int=16,
@@ -39,6 +40,7 @@ def rasterize_gaussians_sum(
         conics.contiguous(),
         num_tiles_hit.contiguous(),
         colors.contiguous(),
+        beta.contiguous(),
         img_height,
         img_width,
         BLOCK_H, 
@@ -58,12 +60,16 @@ class _RasterizeGaussiansSum(Function):
         conics: Float[Tensor, "*batch 3"],
         num_tiles_hit: Int[Tensor, "*batch 1"],
         colors: Float[Tensor, "*batch channels"],
+        beta: Float[Tensor, "*batch 1"],
         img_height: int,
         img_width: int,
         BLOCK_H: int=16,
         BLOCK_W: int=16,
         topk_norm: bool=False
     ) -> Tensor:
+        """
+        invia a cuda i dati per il rasterize
+        """
         num_points = xys.size(0)
         BLOCK_X, BLOCK_Y = BLOCK_W, BLOCK_H
         tile_bounds = (
@@ -120,6 +126,7 @@ class _RasterizeGaussiansSum(Function):
                 xys,
                 conics,
                 colors,
+                beta,
             )
 
             ctx.save_for_backward(
@@ -127,7 +134,8 @@ class _RasterizeGaussiansSum(Function):
                 tile_bins,
                 xys,
                 conics,
-                colors
+                colors,
+                beta,
             )
         else:
             out_img, pixel_topk = _C.nd_rasterize_forward_topk_norm(
@@ -139,6 +147,7 @@ class _RasterizeGaussiansSum(Function):
                 xys,
                 conics,
                 colors,
+                beta,
             )
             ctx.save_for_backward(
                 gaussian_ids_sorted,
@@ -146,6 +155,7 @@ class _RasterizeGaussiansSum(Function):
                 xys,
                 conics,
                 colors,
+                beta,
                 pixel_topk.contiguous()
             )
 
@@ -164,20 +174,21 @@ class _RasterizeGaussiansSum(Function):
             v_xy = torch.zeros_like(xys)
             v_conic = torch.zeros_like(conics)
             v_colors = torch.zeros_like(colors)
-        
+            v_beta = torch.zeros_like(beta) 
         elif not topk_norm:
             (
                 gaussian_ids_sorted,
                 tile_bins,
                 xys,
                 conics,
-                colors
+                colors,
+                beta
             ) = ctx.saved_tensors
             # if colors.shape[-1] == 3:
             #     rasterize_fn = _C.rasterize_backward
             # else:
             rasterize_fn = _C.nd_rasterize_backward
-            v_xy, v_conic, v_colors = rasterize_fn(
+            v_xy, v_conic, v_colors, v_beta = rasterize_fn(
                 img_height,
                 img_width,
                 BLOCK_H,
@@ -187,6 +198,7 @@ class _RasterizeGaussiansSum(Function):
                 xys,
                 conics,
                 colors,
+                beta,
                 v_out_img
             )
         else:
@@ -196,9 +208,10 @@ class _RasterizeGaussiansSum(Function):
                 xys,
                 conics,
                 colors,
+                beta,
                 pixel_topk
             ) = ctx.saved_tensors
-            v_xy, v_conic, v_colors = _C.nd_rasterize_backward_topk_norm(
+            v_xy, v_conic, v_colors, v_beta = _C.nd_rasterize_backward_topk_norm(
                 img_height,
                 img_width,
                 BLOCK_H,
@@ -208,6 +221,7 @@ class _RasterizeGaussiansSum(Function):
                 xys,
                 conics,
                 colors,
+                beta,
                 v_out_img,
                 pixel_topk
             )
@@ -218,6 +232,7 @@ class _RasterizeGaussiansSum(Function):
             v_conic,  # conics
             None,  # num_tiles_hit
             v_colors,  # colors
+            v_beta,   # beta
             None,  # img_height
             None,  # img_width
             None,  # block_w

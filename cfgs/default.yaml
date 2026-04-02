@@ -9,6 +9,7 @@ pos_bits:              16 # Bit precision of individual coordinate dimension
 scale_bits:            16 # Bit precision of individual scale dimension
 rot_bits:              16 # Bit precision of Gaussian orientation angle
 feat_bits:             16 # Bit precision of individual feature dimension
+beta_bits:             16 # Bit precision of beta parameter for beta splatting
 # Logging
 log_root:              "results"
 exp_name:              "test/anime-1_2k" # Path to the logging directory
@@ -47,6 +48,7 @@ pos_lr:                5.0e-4
 scale_lr:              2.0e-3
 rot_lr:                2.0e-3
 feat_lr:               5.0e-3
+beta_lr:               3.5e-3 #abbassa se i bordi sono troppo frastagliati, alza se i bordi sono troppo sfumati
 disable_lr_schedule:   False # Disable learning rate schedule and early stopping
 decay_ratio:           10.0
 check_decay_steps:     1000

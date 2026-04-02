@@ -13,6 +13,7 @@ def project_gaussians_2d_scale_rot(
     means2d: Float[Tensor, "*batch 2"],
     scales2d: Float[Tensor, "*batch 2"],
     rotation: Float[Tensor, "*batch 1"],
+    beta: Float[Tensor, "*batch 1"],
     img_height: int,
     img_width: int,
     tile_bounds: Tuple[int, int, int]
@@ -22,6 +23,7 @@ def project_gaussians_2d_scale_rot(
         means2d.contiguous(),
         scales2d.contiguous(),
         rotation.contiguous(),
+        beta.contiguous(),
         img_height,
         img_width,
         tile_bounds
@@ -36,10 +38,14 @@ class _ProjectGaussians2dScaleRot(Function):
         means2d: Float[Tensor, "*batch 2"],
         scales2d: Float[Tensor, "*batch 2"],
         rotation: Float[Tensor, "*batch 1"],
+        beta: Float[Tensor, "*batch 1"],
         img_height: int,
         img_width: int,
         tile_bounds: Tuple[int, int, int]
     ):
+        """
+            invia i dati a c++
+        """
         num_points = means2d.shape[-2]
         if num_points < 1 or means2d.shape[-1] != 2:
             raise ValueError(f"Invalid shape for means2d: {means2d.shape}")
@@ -53,6 +59,7 @@ class _ProjectGaussians2dScaleRot(Function):
             means2d,
             scales2d,
             rotation,
+            beta,
             img_height,
             img_width,
             tile_bounds
@@ -68,6 +75,7 @@ class _ProjectGaussians2dScaleRot(Function):
             means2d,
             scales2d,
             rotation,
+            beta,       #salva per backward il parametro beta, che sarà usato per calcolare il gradiente di beta durante il backward pass
             radii,
             conics,
         )
@@ -79,14 +87,17 @@ class _ProjectGaussians2dScaleRot(Function):
             means2d,
             scales2d,
             rotation,
+            beta,
             radii,
             conics,
         ) = ctx.saved_tensors
-        (v_cov2d, v_mean2d, v_scale, v_rot) = _C.project_gaussians_2d_scale_rot_backward(
+        # Il wrapper C++ dovrà restituire anche v_beta
+        (v_cov2d, v_mean2d, v_scale, v_rot, v_beta) = _C.project_gaussians_2d_scale_rot_backward(
             ctx.num_points,
             means2d,
             scales2d,
             rotation,
+            beta,
             ctx.img_height,
             ctx.img_width,
             radii,
@@ -104,6 +115,8 @@ class _ProjectGaussians2dScaleRot(Function):
             v_scale,
             #rotation: Float,
             v_rot,
+            # beta: Float,
+            v_beta,
             # img_height: int,
             None,
             # img_width: int,

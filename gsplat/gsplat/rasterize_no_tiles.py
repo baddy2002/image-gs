@@ -14,6 +14,7 @@ def rasterize_gaussians_no_tiles(
     xys: Float[Tensor, "*batch 2"],
     conics: Float[Tensor, "*batch 3"],
     colors: Float[Tensor, "*batch channels"],
+    beta: Float[Tensor, "*batch 1"],
     img_height: int,
     img_width: int
 ) -> Tensor:
@@ -31,6 +32,7 @@ def rasterize_gaussians_no_tiles(
         xys.contiguous(),
         conics.contiguous(),
         colors.contiguous(),
+        beta.contiguous(),
         img_height,
         img_width
     )
@@ -45,6 +47,7 @@ class _RasterizeGaussiansNoTiles(Function):
         xys: Float[Tensor, "*batch 2"],
         conics: Float[Tensor, "*batch 3"],
         colors: Float[Tensor, "*batch channels"],
+        beta: Float[Tensor, "*batch 1"],
         img_height: int,
         img_width: int
     ) -> Tensor:
@@ -59,12 +62,14 @@ class _RasterizeGaussiansNoTiles(Function):
             num_points,
             xys,
             conics,
-            colors
+            colors,
+            beta
         )
         ctx.save_for_backward(
             xys,
             conics,
             colors,
+            beta,
             pixel_topk.contiguous()
         )
 
@@ -79,14 +84,16 @@ class _RasterizeGaussiansNoTiles(Function):
             xys,
             conics,
             colors,
+            beta,
             pixel_topk
         ) = ctx.saved_tensors
-        v_xy, v_conic, v_colors = _C.nd_rasterize_backward_no_tiles(
+        v_xy, v_conic, v_colors, v_beta = _C.nd_rasterize_backward_no_tiles(
             img_height,
             img_width,
             xys,
             conics,
             colors,
+            beta,
             v_out_img,
             pixel_topk
         )
@@ -95,6 +102,7 @@ class _RasterizeGaussiansNoTiles(Function):
             v_xy,  # xys
             v_conic,  # conics
             v_colors,  # colors
+            v_beta,   # beta
             None,  # img_height
             None,  # img_width
         )
@@ -104,6 +112,7 @@ def rasterize_gaussians_simple(
     scale:  Float[Tensor, "*batch 2"],
     rot:    Float[Tensor, "*batch"],
     feat: Float[Tensor, "*batch channels"],
+    beta: Float[Tensor, "*batch 1"],
     img_height: int,
     img_width: int
 ) -> Tensor:
@@ -118,6 +127,7 @@ def rasterize_gaussians_simple(
         scale.contiguous(),
         rot.contiguous(),
         feat.contiguous(),
+        beta.contiguous(),
         img_height,
         img_width
     )
@@ -133,6 +143,7 @@ class _RasterizeGaussiansSimple(Function):
         scale:  Float[Tensor, "*batch 2"],
         rot:    Float[Tensor, "*batch"],
         feat:   Float[Tensor, "*batch channels"],
+        beta:   Float[Tensor, "*batch 1"],
         img_height: int,
         img_width: int
     ) -> Tensor:
@@ -148,13 +159,15 @@ class _RasterizeGaussiansSimple(Function):
             xys,
             scale,
             rot,
-            feat
+            feat,
+            beta
         )
         ctx.save_for_backward(
             xys,
             scale,
             rot,
             feat,
+            beta,
             pixel_topk.contiguous()
         )
 
@@ -170,16 +183,18 @@ class _RasterizeGaussiansSimple(Function):
             scale,
             rot,
             feat,
+            beta,
             pixel_topk
         ) = ctx.saved_tensors
 
-        v_xy, v_scale, v_rot, v_feat = _C.nd_rasterize_backward_simple(
+        v_xy, v_scale, v_rot, v_feat, v_beta = _C.nd_rasterize_backward_simple(
             img_height,
             img_width,
             xys,
             scale,
             rot,
             feat,
+            beta,
             v_out_img,
             pixel_topk
         )
@@ -189,6 +204,7 @@ class _RasterizeGaussiansSimple(Function):
             v_scale, # scale
             v_rot,   # rot
             v_feat,  # feat
+            v_beta,  # beta
             None,  # img_height
             None,  # img_width
         )
