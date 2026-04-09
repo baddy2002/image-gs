@@ -83,6 +83,8 @@ except ImportError:
                 "[bold yellow]gsplat: Setting up CUDA (This may take a few minutes the first time)",
                 spinner="bouncingBall",
             ):
+                #load controlla i sorgenti con timestamp e hash
+                #se sono cambiati usa ninja per ricompilare e ricarica il modulo
                 _C = load(
                     name=name,
                     sources=sources,

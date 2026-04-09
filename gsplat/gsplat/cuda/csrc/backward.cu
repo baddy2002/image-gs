@@ -28,10 +28,12 @@ __global__ void nd_rasterize_backward_kernel(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ rgbs,
+    const float* __restrict__ beta,
     const float* __restrict__ v_output,
     float2* __restrict__ v_xy,
     float3* __restrict__ v_conic,
-    float* __restrict__ v_rgb
+    float* __restrict__ v_rgb,
+    float* __restrict__ v_beta
 ) {
 
     auto block = cg::this_thread_block();
@@ -60,6 +62,7 @@ __global__ void nd_rasterize_backward_kernel(
     __shared__ float2 xy_batch[BLOCK_SIZE];
     __shared__ float3 conic_batch[BLOCK_SIZE];
     __shared__ float rgbs_batch[BLOCK_SIZE][MAX_CHANNELS];
+    __shared__ float beta_batch[BLOCK_SIZE];
 
     // df/d_out for this pixel
     const float *v_out = &(v_output[channels * pix_id]);
@@ -67,7 +70,6 @@ __global__ void nd_rasterize_backward_kernel(
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing
 
-    bool valid = inside;
     const int tr = block.thread_rank();
     cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
     for (int b = 0; b < num_batches; ++b) {
@@ -83,6 +85,7 @@ __global__ void nd_rasterize_backward_kernel(
             const float2 xy = xys[g_id];
             xy_batch[tr] = {xy.x, xy.y};
             conic_batch[tr] = conics[g_id];
+            beta_batch[tr] = beta[g_id];
             for (int c = 0; c < channels; ++c) 
                 rgbs_batch[tr][c] = rgbs[channels * g_id + c];
         }
@@ -92,42 +95,61 @@ __global__ void nd_rasterize_backward_kernel(
 
         // process gaussians in the current batch for this pixel
         int batch_size = min(BLOCK_SIZE, range.y - batch_start);
-        for (int t = 0; t < batch_size; ++t) {
+        for (int t = 0; (t < batch_size) && inside; ++t) {
 
             float3 conic = conic_batch[t];
             float2 xy = xy_batch[t];
+            float b = beta_batch[t];
             float2 delta = {xy.x - px, xy.y - py};
-            float sigma = 0.5f * (conic.x * delta.x * delta.x +
+            float d_squared =  (conic.x * delta.x * delta.x +
                                         conic.z * delta.y * delta.y) +
                                 conic.y * delta.x * delta.y;
-            float d = __expf(-sigma);
-            if (sigma < 0.f || isnan(sigma) || isinf(sigma)) {
-                valid = 0;
-            }
             
+            if (d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
+                continue;
+            }
+
             float  v_rgb_local[MAX_CHANNELS] = {0.f};
             float3 v_conic_local = {0.f, 0.f, 0.f};
             float2 v_xy_local = {0.f, 0.f};
+            float v_beta_local = 0.f;
             
             if (valid) {
-                // update v_rgb for this gaussian
+                const float base = 1.0f - d_squared;
+                const float alpha = powf(base, b);
+
+                // gradiente rispetto al colore
                 for (int c = 0; c < channels; ++c)
-                    v_rgb_local[c] = d * v_out[c];
+                    v_rgb_local[c] = alpha * v_out[c];
 
                 const float* rgb = rgbs_batch[t];
-                // update v_sigma for this gaussian
+
+                /* update v_sigma for this gaussian
                 float v_sigma = 0.f;
                 for (int c = 0; c < channels; ++c)
                     v_sigma += rgb[c] * v_out[c];
                 v_sigma *= -d;
+                */
+               //gradiente rispetto ad alpha
+               float v_alpha = 0.f;
+               for(int c = 0; c < channels; ++c)
+                    v_alpha += rgb[c] * v_out[c];
                 
-                // update v_conic for this gaussian
-                v_conic_local = {0.5f * v_sigma * delta.x * delta.x, 
-                                        v_sigma * delta.x * delta.y, 
-                                 0.5f * v_sigma * delta.y * delta.y};
-                // update v_xy for this gaussian
-                v_xy_local = {v_sigma * (conic.x * delta.x + conic.y * delta.y), 
-                              v_sigma * (conic.y * delta.x + conic.z * delta.y)};
+                //  Gradiente rispetto a BETA 
+                v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
+
+                // Gradiente rispetto alla DISTANZA (d_squared)
+                const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+
+                // gradiente rispetto alla conica (ABC)
+                v_conic_local = { 
+                                v_dist * delta.x * delta.x, 
+                                v_dist * delta.x * delta.y, 
+                                v_dist * delta.y * delta.y};
+
+                // gradiente rispetto xy (centroide)
+                v_xy_local = {v_dist * (2.0f * conic.x * delta.x + conic.y * delta.y), 
+                              v_dist * (2.0f * conic.z * delta.y + conic.y * delta.x)};
             }
             
             // sum across the warp
@@ -135,6 +157,7 @@ __global__ void nd_rasterize_backward_kernel(
                 warpSum(v_rgb_local[c], warp);
             warpSum3(v_conic_local, warp);
             warpSum2(v_xy_local, warp);
+            warpSum(v_beta_local, warp);
 
             if (warp.thread_rank() == 0) {
                 int32_t g = id_batch[t];
@@ -150,6 +173,9 @@ __global__ void nd_rasterize_backward_kernel(
                 float* v_xy_ptr = (float*)(v_xy);
                 atomicAdd(v_xy_ptr + 2*g + 0, v_xy_local.x);
                 atomicAdd(v_xy_ptr + 2*g + 1, v_xy_local.y);
+
+                float* v_beta_ptr = (float*)(v_beta);
+                atomicAdd(v_beta_ptr + g, v_beta_local);
             }
         }
     }
@@ -164,10 +190,12 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ rgbs,
+    const float* __restrict__ beta,
     const float* __restrict__ v_output,
     float2* __restrict__ v_xy,
     float3* __restrict__ v_conic,
     float* __restrict__ v_rgb,
+    float* __restrict__ v_beta,
     int* __restrict__ pixel_topk
 ) {
 
@@ -194,57 +222,67 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
     const int* topk = &pixel_topk[pix_id * TOP_K];
     
     // compute the normalization factor
-
-    float d_local[TOP_K] = {0.0f};
+    float alpha_local[TOP_K] = {0.0f};
+    float base_local[TOP_K] = {0.0f};
     float denom = EPS;
-    int cnt = 0;
+
     for (int k = 0; k < TOP_K; ++k) {
         int g_id = topk[k];
         if (g_id < 0) continue;
-        ++cnt;
+
         float3 conic = conics[g_id];
         float2 xy = xys[g_id];
+        float b = beta[g_id];
+
         float2 delta = {xy.x - px, xy.y - py};
-        float sigma = 0.5f * (conic.x * delta.x * delta.x +
-                                    conic.z * delta.y * delta.y) +
-                            conic.y * delta.x * delta.y;
-        float d = __expf(-sigma);
-        denom += d;
-        d_local[k] = d;
+        float d_squared = (
+                        conic.x * delta.x * delta.x +
+                        conic.z * delta.y * delta.y +
+                        conic.y * delta.x * delta.y);
+        float base = max(1.0f - d_squared, 0.0f);
+        float alpha = powf(base, b);
+
+        alpha_local[k] = alpha;
+        base_local[k] = base;
+        denom += alpha;
     }
-    // if (cnt > 1) {printf("cnt: %d\n", cnt);}
     
-    float v_d_local[TOP_K] = {0.f};
+    //DERIVATA DELLA NORMALIZZAZIONE ---
+    float v_alpha_local[TOP_K] = {0.f};
 
     // compute each gaussian's contribution to the gradient
     for (int k = 0; k < TOP_K; ++k) {
         int g_id = topk[k];
         if (g_id < 0) continue;
 
-        float d = d_local[k];
-        float norm_d = d / denom;
+        float alpha = alpha_local[k];
+        float norm_weight = alpha / denom;
+
         float v_rgb_local[MAX_CHANNELS] = {0.f};
 
         // update v_rgb for this gaussian
-        for (int c = 0; c < channels; ++c)
-            v_rgb_local[c] = norm_d * v_out[c];
         
         const float* rgb = &rgbs[channels * g_id];
         float* v_rgb_ptr = (float*)(v_rgb);
         for (int c = 0; c < channels; ++c)
-            atomicAdd(v_rgb_ptr + channels * g_id + c, v_rgb_local[c]);
+            atomicAdd(v_rgb_ptr + channels * g_id + c, norm_weight * v_out[c]);
         
-        float v_norm_d = 0.f;
+        // Quanto la Loss cambia rispetto al peso normalizzato di questa gaussiana
+        float v_norm_weight = 0.f;
         for (int c = 0; c < channels; ++c)
-            v_norm_d += rgb[c] * v_out[c];
+            v_norm_weight += rgb[c] * v_out[c];
 
-        float tmp = -d / (denom*denom) * v_norm_d;
+        // Formula derivata Softmax: dL/d_alpha
+        // Ogni alpha_k influenza tutti i pesi normalizzati
+        //TODO: cerca di capirla bene!!!
+        float term_denom = v_norm_weight / denom;
+        float term_shared = - (alpha * v_norm_weight) / (denom * denom);
         for (int l = 0; l < TOP_K; ++l) {
             if (l == k) {
-                v_d_local[l] += v_norm_d/denom + tmp;
+                v_alpha_local[l] += term_denom + term_shared;
             } 
             else {
-                v_d_local[l] += tmp;
+                v_alpha_local[l] += term_shared;
             }
         }        
     }
@@ -253,23 +291,32 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
         int g_id = topk[k];
         if (g_id < 0) continue;
 
+        float v_alpha = v_alpha_local[k];
         const float* rgb = &rgbs[channels * g_id];
-        float v_sigma = 0.f;
-        v_sigma = v_d_local[k];
-        v_sigma *= -d_local[k];
+        float b = beta[g_id];
+        float base = base_local[k];
+        float alpha = alpha_local[k];
+
+        // gradiente rispetto a beta
+        float v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
+
+        // Gradiente rispetto alla DISTANZA (d_squared)
+        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
 
         float3 conic = conics[g_id];
         float2 xy = xys[g_id];
         float2 delta = {xy.x - px, xy.y - py};
         
-        // update v_conic for this gaussian
-        float3 v_conic_local = {0.5f * v_sigma * delta.x * delta.x, 
-                                v_sigma * delta.x * delta.y, 
-                         0.5f * v_sigma * delta.y * delta.y};
+        // gradiente rispetto alla conica
+        float3 v_conic_local = { 
+                            v_dist * delta.x * delta.x, 
+                            v_dist * delta.x * delta.y, 
+                            v_dist * delta.y * delta.y};
         
-        // update v_xy for this gaussian
-        float2 v_xy_local = {v_sigma * (conic.x * delta.x + conic.y * delta.y), 
-                      v_sigma * (conic.y * delta.x + conic.z * delta.y)};
+        // gradiente rispetto alla posizione (centroide)
+        float2 v_xy_local = {
+                    v_dist * (2.0f * conic.x * delta.x + conic.y * delta.y), 
+                    v_dist * (2.0f * conic.z * delta.y + conic.y * delta.x)};
         
 
         float* v_conic_ptr = (float*)(v_conic);
@@ -280,6 +327,9 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
         float* v_xy_ptr = (float*)(v_xy);
         atomicAdd(v_xy_ptr + 2*g_id + 0, v_xy_local.x);
         atomicAdd(v_xy_ptr + 2*g_id + 1, v_xy_local.y);
+
+        float* v_beta_ptr = (float*)(v_beta);
+        atomicAdd(v_beta_ptr + g_id, v_beta_local);
     }
 }
 
@@ -289,10 +339,12 @@ __global__ void nd_rasterize_backward_no_tiles_kernel(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ rgbs,
+    const float* __restrict__ beta,
     const float* __restrict__ v_output,
     float2* __restrict__ v_xy,
     float3* __restrict__ v_conic,
     float* __restrict__ v_rgb,
+    float* __restrict__ v_beta,
     int* __restrict__ pixel_topk
 ) {
     
@@ -318,55 +370,64 @@ __global__ void nd_rasterize_backward_no_tiles_kernel(
     
     // compute the normalization factor
 
-    float d_local[TOP_K] = {0.0f};
+    float alpha_local[TOP_K] = {0.0f};
+    float base_local[TOP_K] = {0.0f};
+
     float denom = EPS_no_tiles;
-    int cnt = 0;
     for (int k = 0; k < TOP_K; ++k) {
         int g_id = topk[k];
         if (g_id < 0) continue;
-        ++cnt;
+
         float3 conic = conics[g_id];
         float2 xy = xys[g_id];
+        float b = beta[g_id];
+
         float2 delta = {xy.x - px, xy.y - py};
-        float sigma = 0.5f * (conic.x * delta.x * delta.x +
-                                    conic.z * delta.y * delta.y) +
-                            conic.y * delta.x * delta.y;
-        float d = __expf(-sigma);
-        denom += d;
-        d_local[k] = d;
+        float d_squared =  (conic.x * delta.x * delta.x +
+                            conic.z * delta.y * delta.y +
+                            conic.y * delta.x * delta.y);
+        if (d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
+            continue;
+        }
+        float base = max(1.0f - d_squared, 0.0f);
+        float alpha = powf(base, b);
+        denom += alpha;
+        alpha_local[k] = alpha;
+        base_local[k] = base;
     }
     
-    float v_d_local[TOP_K] = {0.f};
+    //DERIVATA DELLA NORMALIZZAZIONE ---
+    float v_alpha_local[TOP_K] = {0.f};
 
     // compute each gaussian's contribution to the gradient
     for (int k = 0; k < TOP_K; ++k) {
         int g_id = topk[k];
         if (g_id < 0) continue;
 
-        float d = d_local[k];
-        float norm_d = d / denom;
-        float v_rgb_local[MAX_CHANNELS] = {0.f};
+        float alpha = alpha_local[k];        
+        float norm_weigh = alpha / denom;
 
-        // update v_rgb for this gaussian
-        for (int c = 0; c < channels; ++c)
-            v_rgb_local[c] = norm_d * v_out[c];
-        
+        // gradiente rispetto al colore 
         const float* rgb = &rgbs[channels * g_id];
         float* v_rgb_ptr = (float*)(v_rgb);
         for (int c = 0; c < channels; ++c)
-            atomicAdd(v_rgb_ptr + channels * g_id + c, v_rgb_local[c]);
+            atomicAdd(v_rgb_ptr + channels * g_id + c, norm_weigh * v_out[c]);
         
-        float v_norm_d = 0.f;
+        // Quanto la Loss cambia rispetto al peso normalizzato di questa gaussiana
+        float v_norm_weight = 0.f;
         for (int c = 0; c < channels; ++c)
-            v_norm_d += rgb[c] * v_out[c];
+            v_norm_weight += rgb[c] * v_out[c];
 
-        float tmp = -d / (denom*denom) * v_norm_d;
+        // Formula derivata Softmax: dL/d_alpha
+        // Ogni alpha_k influenza tutti i pesi normalizzati
+        float term_denom = v_norm_weight / denom;
+        float term_shared = - (alpha * v_norm_weight) / (denom * denom);
         for (int l = 0; l < TOP_K; ++l) {
             if (l == k) {
-                v_d_local[l] += v_norm_d/denom + tmp;
+                v_alpha_local[l] += term_denom + term_shared;
             } 
             else {
-                v_d_local[l] += tmp;
+                v_alpha_local[l] += term_shared;
             }
         }        
     }
@@ -376,23 +437,32 @@ __global__ void nd_rasterize_backward_no_tiles_kernel(
         if (g_id < 0) continue;
 
         const float* rgb = &rgbs[channels * g_id];
-        float v_sigma = 0.f;
-        v_sigma = v_d_local[k];
-        v_sigma *= -d_local[k];
-
         float3 conic = conics[g_id];
         float2 xy = xys[g_id];
+        float b = beta[g_id];
         float2 delta = {xy.x - px, xy.y - py};
-        
-        // update v_conic for this gaussian
-        float3 v_conic_local = {0.5f * v_sigma * delta.x * delta.x, 
-                                v_sigma * delta.x * delta.y, 
-                         0.5f * v_sigma * delta.y * delta.y};
+        float base = base_local[k];
+        float alpha = alpha_local[k];
+
+        float v_alpha = v_alpha_local[k];        
+
+        // gradiente rispetto a beta
+        float v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
+
+        // Gradiente rispetto alla DISTANZA (d_squared)
+        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+
+        // gradiente per conica (ABC)
+        float3 v_conic_local = {
+                        v_dist * delta.x * delta.x, 
+                        v_dist * delta.x * delta.y, 
+                        v_dist * delta.y * delta.y};
         
         // update v_xy for this gaussian
-        float2 v_xy_local = {v_sigma * (conic.x * delta.x + conic.y * delta.y), 
-                      v_sigma * (conic.y * delta.x + conic.z * delta.y)};
-        
+        float2 v_xy_local = {
+                    v_dist * (2.0f * conic.x * delta.x + conic.y * delta.y), 
+                    v_dist * (2.0f * conic.z * delta.y + conic.y * delta.x)};
+         
 
         float* v_conic_ptr = (float*)(v_conic);
         atomicAdd(v_conic_ptr + 3*g_id + 0, v_conic_local.x);
@@ -402,6 +472,9 @@ __global__ void nd_rasterize_backward_no_tiles_kernel(
         float* v_xy_ptr = (float*)(v_xy);
         atomicAdd(v_xy_ptr + 2*g_id + 0, v_xy_local.x);
         atomicAdd(v_xy_ptr + 2*g_id + 1, v_xy_local.y);
+
+        float* v_beta_ptr = (float*)(v_beta);
+        atomicAdd(v_beta_ptr + g_id, v_beta_local);
     }
 }
 
@@ -413,10 +486,12 @@ __global__ void rasterize_backward_kernel(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float3* __restrict__ rgbs,
+    const float* __restrict__ beta,
     const float3* __restrict__ v_output,
     float2* __restrict__ v_xy,
     float3* __restrict__ v_conic,
-    float3* __restrict__ v_rgb
+    float3* __restrict__ v_rgb,
+    float* __restrict__ v_beta
 ) {
     auto block = cg::this_thread_block();
     int32_t tile_id =
@@ -444,6 +519,7 @@ __global__ void rasterize_backward_kernel(
     __shared__ float2 xy_batch[BLOCK_SIZE];
     __shared__ float3 conic_batch[BLOCK_SIZE];
     __shared__ float3 rgbs_batch[BLOCK_SIZE];
+    __shared__ float beta_batch[BLOCK_SIZE];
 
     // df/d_out for this pixel
     const float3 v_out = v_output[pix_id];
@@ -467,6 +543,7 @@ __global__ void rasterize_backward_kernel(
             xy_batch[tr] = {xy.x, xy.y};
             conic_batch[tr] = conics[g_id];
             rgbs_batch[tr] = rgbs[g_id];
+            beta_batch[tr] = beta[g_id];
         }
 
         // wait for other threads to collect the gaussians in batch
@@ -478,43 +555,71 @@ __global__ void rasterize_backward_kernel(
 
             float3 conic = conic_batch[t];
             float2 xy = xy_batch[t];
+            float b = beta_batch[t];
             float2 delta = {xy.x - px, xy.y - py};
+            
+            /*
             float sigma = 0.5f * (conic.x * delta.x * delta.x +
                                         conic.z * delta.y * delta.y) +
                                 conic.y * delta.x * delta.y;
-            float d = __expf(-sigma);
-            if (sigma < 0.f || isnan(sigma) || isinf(sigma)) {
+            */
+           const float d_squared = (conic.x * delta.x * delta.x +
+                                conic.z * delta.y * delta.y) +
+                                conic.y * delta.x * delta.y;
+            //float d = __expf(-sigma);
+            if (d_squared >= 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
                 valid = 0;
             }
             
+            //variabili locali per gradienti di questo pixel
             float3 v_rgb_local = {0.f, 0.f, 0.f};
             float3 v_conic_local = {0.f, 0.f, 0.f};
             float2 v_xy_local = {0.f, 0.f};
+            float v_beta_local = 0.f;
             
             if (valid) {
-                // update v_rgb for this gaussian
-                v_rgb_local = {d * v_out.x, d * v_out.y, d * v_out.z};
+                const float base = 1.0f - d_squared;
+                const float alpha = powf(base, b);
+                
+                // gradiente rispetto al colore
+                v_rgb_local = {alpha * v_out.x, alpha * v_out.y, alpha * v_out.z};
 
                 const float3 rgb = rgbs_batch[t];
-                // update v_sigma for this gaussian
-                const float v_sigma = (
+                
+                //Gradiente rispetto ad alpha (opacità)
+                //poichè l'opacità influisce su tutti i canali RGB somma i contributi,
+                //il gradiente di alpha deve infatti avere un unico valore essendo alpha uno scalare
+                // v_out*color, è un risultato intermedio per i gradienti di beta e distanza 
+                const float v_alpha = (
                     rgb.x * v_out.x + 
                     rgb.y * v_out.y + 
                     rgb.z * v_out.z
-                ) * (-d);
+                );
+
+                //  Gradiente rispetto a BETA 
+                // dL/dbeta = v_alpha * dalpha/dbeta = v_alpha * alpha * ln(base)
+                // Usiamo max(base, 1e-6) per evitare che il logaritmo esploda a -inf
+                v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
+
+                // Gradiente rispetto alla DISTANZA (d_squared)
+                // controlliamo esponente non sia sotto lo 0 per evitare gradienti esplosivi quando la distanza è molto piccola
+                const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+
                 // update v_conic for this gaussian
-                v_conic_local = {0.5f * v_sigma * delta.x * delta.x, 
-                                        v_sigma * delta.x * delta.y, 
-                                 0.5f * v_sigma * delta.y * delta.y};
-                // update v_xy for this gaussian
-                v_xy_local = {v_sigma * (conic.x * delta.x + conic.y * delta.y), 
-                              v_sigma * (conic.y * delta.x + conic.z * delta.y)};
+                v_conic_local = {   v_dist * delta.x * delta.x,          // dL/dA
+                                    v_dist * delta.x * delta.y,    // dL/dB
+                                    v_dist * delta.y * delta.y};         // dL/dC
+                //  Gradiente rispetto a XY (Centro della gaussiana) ---
+                // dL/dx = v_dist * ddist/dx. Poiché dx = (x - px), ddist/dx = 2A*dx + B*dy
+                v_xy_local = {v_dist * (2.0f * conic.x * delta.x + conic.y * delta.y),
+                              v_dist * (2.0f * conic.z * delta.y + conic.y * delta.x)};
             }
             
             // sum across the warp
             warpSum3(v_rgb_local, warp);
             warpSum3(v_conic_local, warp);
             warpSum2(v_xy_local, warp);
+            warpSum(v_beta_local, warp);
 
             if (warp.thread_rank() == 0) {
                 int32_t g = id_batch[t];
@@ -531,6 +636,9 @@ __global__ void rasterize_backward_kernel(
                 float* v_xy_ptr = (float*)(v_xy);
                 atomicAdd(v_xy_ptr + 2*g + 0, v_xy_local.x);
                 atomicAdd(v_xy_ptr + 2*g + 1, v_xy_local.y);
+
+                float* v_beta_ptr = v_beta;
+                atomicAdd(v_beta_ptr + g, v_beta_local);
             }
         }
     }

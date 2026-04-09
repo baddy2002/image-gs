@@ -12,6 +12,7 @@ __global__ void nd_rasterize_forward(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ colors,
+    const float* __restrict__ beta,
     float* __restrict__ out_img
 );
 
@@ -24,6 +25,7 @@ __global__ void nd_rasterize_forward_topk_norm(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ colors,
+    const float* __restrict__ beta,
     float* __restrict__ out_img,
     int* __restrict__ pixel_topk
 );
@@ -35,6 +37,7 @@ __global__ void nd_rasterize_forward_no_tiles(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ colors,
+    const float* __restrict__ beta,
     float* __restrict__ out_img,
     int* __restrict__ pixel_topk
 );
@@ -81,5 +84,6 @@ __global__ void rasterize_forward(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float3* __restrict__ colors,
+    const float* __restrict__ beta,
     float3* __restrict__ out_img
 );

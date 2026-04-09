@@ -45,14 +45,16 @@ std::tuple<
     const torch::Tensor &tile_bins,
     const torch::Tensor &xys,
     const torch::Tensor &conics,
-    const torch::Tensor &colors
+    const torch::Tensor &colors,
+    const torch::Tensor &beta
 );
 
 std::
     tuple<
         torch::Tensor, // dL_dxy
         torch::Tensor, // dL_dconic
-        torch::Tensor  // dL_dcolors
+        torch::Tensor, // dL_dcolors
+        torch::Tensor  // dL_dbeta
         >
     nd_rasterize_backward_tensor(
         const unsigned img_height,
@@ -64,6 +66,7 @@ std::
         const torch::Tensor &xys,
         const torch::Tensor &conics,
         const torch::Tensor &colors,
+        const torch::Tensor &beta,
         const torch::Tensor &v_output  // dL_dout_color
     );
 
@@ -78,14 +81,16 @@ std::tuple<
     const torch::Tensor &tile_bins,
     const torch::Tensor &xys,
     const torch::Tensor &conics,
-    const torch::Tensor &colors
+    const torch::Tensor &colors,
+    const torch::Tensor &beta
 );
 
 std::
     tuple<
         torch::Tensor, // dL_dxy
         torch::Tensor, // dL_dconic
-        torch::Tensor  // dL_dcolors
+        torch::Tensor, // dL_dcolors
+        torch::Tensor  // dL_dbeta
         >
     nd_rasterize_backward_topk_norm_tensor(
         const unsigned img_height,
@@ -97,6 +102,7 @@ std::
         const torch::Tensor &xys,
         const torch::Tensor &conics,
         const torch::Tensor &colors,
+        const torch::Tensor &beta,
         const torch::Tensor &v_output,  // dL_dout_color
         const torch::Tensor &pixel_topk
     );
@@ -109,13 +115,15 @@ std::tuple<
     const unsigned num_points,
     const torch::Tensor &xys,
     const torch::Tensor &conics,
-    const torch::Tensor &colors
+    const torch::Tensor &colors,
+    const torch::Tensor &beta
 );
 
 std::tuple<
     torch::Tensor, // dL_dxy
     torch::Tensor, // dL_dconic
-    torch::Tensor  // dL_dcolors
+    torch::Tensor, // dL_dcolors
+    torch::Tensor  // dL_dbeta
     >
 nd_rasterize_backward_no_tiles_tensor(
     const unsigned img_height,
@@ -123,6 +131,7 @@ nd_rasterize_backward_no_tiles_tensor(
     const torch::Tensor &xys,
     const torch::Tensor &conics,
     const torch::Tensor &colors,
+    const torch::Tensor &beta,
     const torch::Tensor &v_output,  // dL_dout_color
     const torch::Tensor &pixel_topk
 );
@@ -136,14 +145,16 @@ std::tuple<
     const torch::Tensor &xys,
     const torch::Tensor &scale,
     const torch::Tensor &rot,
-    const torch::Tensor &feat
+    const torch::Tensor &feat,
+    const torch::Tensor &beta
 );
 
 std::tuple<
     torch::Tensor, // dL_dxy
     torch::Tensor, // dL_dscale
     torch::Tensor, // dL_drot
-    torch::Tensor  // dL_dfeat
+    torch::Tensor, // dL_dfeat
+    torch::Tensor  // dL_dbeta
     >
 nd_rasterize_backward_simple_tensor(
     const unsigned img_height,
@@ -152,6 +163,7 @@ nd_rasterize_backward_simple_tensor(
     const torch::Tensor &scale,
     const torch::Tensor &rot,
     const torch::Tensor &feat,
+    const torch::Tensor &beta,
     const torch::Tensor &v_output,  // dL_dout_color
     const torch::Tensor &pixel_topk
 );
@@ -167,14 +179,16 @@ std::tuple<
     const torch::Tensor &tile_bins,
     const torch::Tensor &xys,
     const torch::Tensor &conics,
-    const torch::Tensor &colors
+    const torch::Tensor &colors,
+    const torch::Tensor &beta
 );
 
 std::
     tuple<
         torch::Tensor, // dL_dxy
         torch::Tensor, // dL_dconic
-        torch::Tensor  // dL_dcolors
+        torch::Tensor, // dL_dcolors
+        torch::Tensor  // dL_dbeta
         >
     rasterize_backward_tensor(
         const unsigned img_height,
@@ -186,6 +200,7 @@ std::
         const torch::Tensor &xys,
         const torch::Tensor &conics,
         const torch::Tensor &colors,
+        const torch::Tensor &beta,
         const torch::Tensor &v_output  // dL_dout_color
     );
 
@@ -197,9 +212,10 @@ std::tuple<
     torch::Tensor>
 project_gaussians_2d_scale_rot_forward_tensor(
     const int num_points,
-    torch::Tensor &means2d,
-    torch::Tensor &scales2d,
-    torch::Tensor &rotation,
+    const torch::Tensor &means2d,
+    const torch::Tensor &scales2d,
+    const torch::Tensor &rotation,
+    const torch::Tensor &beta,
     const unsigned img_height,
     const unsigned img_width,
     const std::tuple<int, int, int> tile_bounds
@@ -209,16 +225,19 @@ std::tuple<
     torch::Tensor,
     torch::Tensor,
     torch::Tensor,
-    torch::Tensor>
+    torch::Tensor,
+    torch::Tensor  // dL_dbeta
+    >
 project_gaussians_2d_scale_rot_backward_tensor(
     const int num_points,
-    torch::Tensor &means2d,
-    torch::Tensor &scales2d,
-    torch::Tensor &rotation,
+    const torch::Tensor &means2d,
+    const torch::Tensor &scales2d,
+    const torch::Tensor &rotation,
+    const torch::Tensor &beta,
     const unsigned img_height,
     const unsigned img_width,
-    torch::Tensor &radii,
-    torch::Tensor &conics,
-    torch::Tensor &v_xy,
-    torch::Tensor &v_conic
+    const torch::Tensor &radii,
+    const torch::Tensor &conics,
+    const torch::Tensor &v_xy,
+    const torch::Tensor &v_conic
 );

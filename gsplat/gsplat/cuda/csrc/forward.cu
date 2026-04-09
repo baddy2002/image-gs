@@ -81,6 +81,7 @@ __global__ void nd_rasterize_forward(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ colors,
+    const float* __restrict__ beta,
     float* __restrict__ out_img
 ) {
     auto block = cg::this_thread_block();
@@ -106,6 +107,7 @@ __global__ void nd_rasterize_forward(
     __shared__ int32_t id_batch[BLOCK_SIZE];
     __shared__ float2 xy_batch[BLOCK_SIZE];
     __shared__ float3 conic_batch[BLOCK_SIZE];
+    __shared__ float beta_batch[BLOCK_SIZE];
 
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing its
@@ -132,6 +134,7 @@ __global__ void nd_rasterize_forward(
             const float2 xy = xys[g_id];
             xy_batch[tr] = {xy.x, xy.y};
             conic_batch[tr] = conics[g_id];
+            beta_batch[tr] = beta[g_id];
         }
 
         // wait for other threads to collect the gaussians in batch
@@ -142,21 +145,21 @@ __global__ void nd_rasterize_forward(
         for (int t = 0; (t < batch_size) && !done; ++t) {
             const float3 conic = conic_batch[t];
             const float2 xy = xy_batch[t];
+            const float b = beta_batch[t];
             const float2 delta = {xy.x - px, xy.y - py};
-            const float sigma = 0.5f * (conic.x * delta.x * delta.x +
-                                        conic.z * delta.y * delta.y) +
-                                        conic.y * delta.x * delta.y;
+            const float d_squared = (conic.x * delta.x * delta.x +
+                                 conic.z * delta.y * delta.y) +
+                                 conic.y * delta.x * delta.y;
             
-            if (sigma < 0.f || isnan(sigma) || isinf(sigma)) {
+            if (d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
                 continue;
             }
             
-            const float alpha = __expf(-sigma);
+            const float alpha = powf(1.0f - d_squared, b);
             int32_t g = id_batch[t];
-            const float vis = alpha;
             
             for (int c = 0; c < channels; ++c) {
-                pix_out[c] += colors[g * channels + c] * vis;
+                pix_out[c] += colors[g * channels + c] * alpha;
             }
         }
     }
@@ -177,6 +180,7 @@ __global__ void nd_rasterize_forward_topk_norm(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ colors,
+    const float* __restrict__ beta,
     float* __restrict__ out_img,
     int* __restrict__ pixel_topk
 ) {
@@ -203,6 +207,7 @@ __global__ void nd_rasterize_forward_topk_norm(
     __shared__ int32_t id_batch[BLOCK_SIZE];
     __shared__ float2 xy_batch[BLOCK_SIZE];
     __shared__ float3 conic_batch[BLOCK_SIZE];
+    __shared__ float beta_batch[BLOCK_SIZE];
 
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing its
@@ -214,6 +219,7 @@ __global__ void nd_rasterize_forward_topk_norm(
     
     // top k Gaussian ids
     int32_t topk[TOP_K];
+    // top k gaussian values
     float topk_vals[TOP_K] = {0.f};
     for (int k = 0; k < TOP_K; ++k)
         topk[k] = -1;
@@ -235,6 +241,7 @@ __global__ void nd_rasterize_forward_topk_norm(
             const float2 xy = xys[g_id];
             xy_batch[tr] = {xy.x, xy.y};
             conic_batch[tr] = conics[g_id];
+            beta_batch[tr] = beta[g_id];
         }
 
         // wait for other threads to collect the gaussians in batch
@@ -245,7 +252,10 @@ __global__ void nd_rasterize_forward_topk_norm(
         for (int t = 0; (t < batch_size) && !done; ++t) {
             const float3 conic = conic_batch[t];
             const float2 xy = xy_batch[t];
+            const float b = beta_batch[t];
+
             const float2 delta = {xy.x - px, xy.y - py};
+            /*
             const float sigma = 0.5f * (conic.x * delta.x * delta.x +
                                         conic.z * delta.y * delta.y) +
                                         conic.y * delta.x * delta.y;
@@ -253,8 +263,15 @@ __global__ void nd_rasterize_forward_topk_norm(
             if (sigma < 0.f || isnan(sigma) || isinf(sigma)) {
                 continue;
             }
-            
             const float alpha = __expf(-sigma);
+            */
+            const float d_squared = (conic.x * delta.x * delta.x +
+                                 conic.z * delta.y * delta.y) +
+                                 conic.y * delta.x * delta.y;
+            if( d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
+                continue;
+            }
+            const float alpha = powf(1.0f - d_squared, b);
             int32_t g = id_batch[t];
 
             // find the minimum value in topk
@@ -277,17 +294,20 @@ __global__ void nd_rasterize_forward_topk_norm(
         }
     }
 
-    for (int c = 0; c < channels; ++c) {
-        float sum_val = 0.f;
-        for (int k = 0; k < TOP_K; ++k) {
-            if (topk[k] < 0) continue;
+    // Calcola la somma degli alpha migliori una sola volta per il pixel
+    float sum_val = 0.f;
+    for (int k = 0; k < TOP_K; ++k) {
+        if (topk[k] >= 0) {
             sum_val += topk_vals[k];
         }
-        for (int k = 0; k < TOP_K; ++k) {
-            int32_t g = topk[k];
-            if (g < 0) continue;
-            // normalize by sum of topk values
-            float vis = topk_vals[k] / (sum_val + EPS);
+    }
+
+    // recupera 
+    for (int k = 0; k < TOP_K; ++k) {
+        int32_t g = topk[k];
+        if (g < 0) continue;
+        float vis = topk_vals[k] / (sum_val + EPS); // Normalizzazione valori di alpha
+        for (int c = 0; c < channels; ++c) {
             pix_out[c] += colors[g * channels + c] * vis;
         }
     }
@@ -296,6 +316,7 @@ __global__ void nd_rasterize_forward_topk_norm(
         for (int c = 0; c < channels; ++c) {
             out_img[pix_id * channels + c] = pix_out[c];
         }
+        //salva gli id delle gaussiane per il pixel in modo da non doverle ricercare in bw
         for (int k = 0; k < TOP_K; ++k) {
             pixel_topk[pix_id * TOP_K + k] = topk[k];
         }
@@ -309,6 +330,7 @@ __global__ void nd_rasterize_forward_no_tiles(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float* __restrict__ colors,
+    const float* __restrict__ beta,
     float* __restrict__ out_img,
     int* __restrict__ pixel_topk
 ) {
@@ -336,16 +358,17 @@ __global__ void nd_rasterize_forward_no_tiles(
     for (int g = 0; g < num_points; ++g) {
         const float3 conic = conics[g];
         const float2 xy = xys[g];
+        const float b = beta[g];
         const float2 delta = {xy.x - px, xy.y - py};
-        const float sigma = 0.5f * (conic.x * delta.x * delta.x +
-                                    conic.z * delta.y * delta.y) +
-                                    conic.y * delta.x * delta.y;
-        
-        if (sigma < 0.f || isnan(sigma) || isinf(sigma)) {
+
+       const float d_squared = (conic.x * delta.x * delta.x +
+                                    conic.z * delta.y * delta.y +
+                                    conic.y * delta.x * delta.y);
+        if (d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
             continue;
         }
-        
-        const float alpha = __expf(-sigma);
+        const float alpha = powf(1.0f - d_squared, b);
+
         int32_t g_id = g;
 
         // find the minimum value in topk
@@ -367,17 +390,19 @@ __global__ void nd_rasterize_forward_no_tiles(
         }
     }
 
-    for (int c = 0; c < channels; ++c) {
-        float sum_val = 0.f;
-        for (int k = 0; k < TOP_K; ++k) {
-            if (topk[k] < 0) continue;
-            sum_val += topk_vals[k];
-        }
-        for (int k = 0; k < TOP_K; ++k) {
-            int32_t g = topk[k];
-            if (g < 0) continue;
-            // normalize by sum of topk values
-            float vis = topk_vals[k] / (sum_val + EPS_no_tiles);
+    // Calcola la somma degli alpha migliori una sola volta per il pixel
+    float sum_val = 0.f;
+    for (int k = 0; k < TOP_K; ++k) {
+        if (topk[k] < 0) continue;
+        sum_val += topk_vals[k];
+    }
+
+    for (int k = 0; k < TOP_K; ++k) {
+        int32_t g = topk[k];
+        if (g < 0) continue;
+        // normalize by sum of topk values
+        float vis = topk_vals[k] / (sum_val + EPS_no_tiles);
+        for (int c = 0; c < channels; ++c) {
             pix_out[c] += colors[g * channels + c] * vis;
         }
     }
@@ -400,6 +425,7 @@ __global__ void rasterize_forward(
     const float2* __restrict__ xys,
     const float3* __restrict__ conics,
     const float3* __restrict__ colors,
+    const float* __restrict__ beta,
     float3* __restrict__ out_img
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
@@ -428,9 +454,11 @@ __global__ void rasterize_forward(
     int2 range = tile_bins[tile_id];
     int num_batches = (range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
+    //carica in shared memory i dati delle gaussiane in batch
     __shared__ int32_t id_batch[BLOCK_SIZE];
     __shared__ float2 xy_batch[BLOCK_SIZE];
     __shared__ float3 conic_batch[BLOCK_SIZE];
+    __shared__ float beta_batch[BLOCK_SIZE];
 
     // index of most recent gaussian to write to this thread's pixel
     int cur_idx = 0;
@@ -457,6 +485,7 @@ __global__ void rasterize_forward(
             const float2 xy = xys[g_id];
             xy_batch[tr] = {xy.x, xy.y};
             conic_batch[tr] = conics[g_id];
+            beta_batch[tr] = beta[g_id];
         }
 
         // wait for other threads to collect the gaussians in batch
@@ -467,25 +496,31 @@ __global__ void rasterize_forward(
         for (int t = 0; (t < batch_size) && !done; ++t) {
             const float3 conic = conic_batch[t];
             const float2 xy = xy_batch[t];
+            const float b = beta_batch[t];
+
             const float2 delta = {xy.x - px, xy.y - py};
+            /* 
             const float sigma = 0.5f * (conic.x * delta.x * delta.x +
                                         conic.z * delta.y * delta.y) +
                                         conic.y * delta.x * delta.y;
-            
+            */
+            const float d_squared = (conic.x * delta.x * delta.x +
+                                        conic.z * delta.y * delta.y) +
+                                        conic.y * delta.x * delta.y;
             // const float alpha = min(1.f, __expf(-sigma));
-            if (sigma < 0.f || isnan(sigma) || isinf(sigma)) {
-            //     printf("wrong value sigma %f delta %f %f conic %f %f %f\n", 
-            //         sigma, delta.x, delta.y, conic.x, conic.y, conic.z);
+            if (d_squared >= 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
+            //     printf("wrong value d_squared %f delta %f %f conic %f %f %f\n", 
+            //         d_squared, delta.x, delta.y, conic.x, conic.y, conic.z);
                 continue;
             }
             
-            const float alpha = __expf(-sigma);
+            //const float alpha = __expf(-sigma);
+            const float alpha = powf(1.0f - d_squared, b);
             int32_t g = id_batch[t];
-            const float vis = alpha;
             const float3 c = colors[g];
-            pix_out.x = pix_out.x + c.x * vis;
-            pix_out.y = pix_out.y + c.y * vis;
-            pix_out.z = pix_out.z + c.z * vis;
+            pix_out.x = pix_out.x + c.x * alpha;
+            pix_out.y = pix_out.y + c.y * alpha;
+            pix_out.z = pix_out.z + c.z * alpha;
             cur_idx = batch_start + t;
         }
     }
