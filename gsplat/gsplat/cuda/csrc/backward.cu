@@ -274,9 +274,11 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
 
         // Formula derivata Softmax: dL/d_alpha
         // Ogni alpha_k influenza tutti i pesi normalizzati
-        //TODO: cerca di capirla bene!!!
+        // usiamo regola del quozionte f'(x)g(x)-f(x)g'(x) / g(x)^2
+        // solo se l==k: v_norm_weight * 1/D
         float term_denom = v_norm_weight / denom;
-        float term_shared = - (alpha * v_norm_weight) / (denom * denom);
+        // termine condiviso (-alpha )/D^2 per ogni alpha_k
+        float term_shared = (v_norm_weight * (-alpha )) / (denom * denom);
         for (int l = 0; l < TOP_K; ++l) {
             if (l == k) {
                 v_alpha_local[l] += term_denom + term_shared;
