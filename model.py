@@ -847,7 +847,10 @@ class GaussianSplatting2D(nn.Module):
         self.feat = nn.Parameter(all_feat, requires_grad=True)
         self.vis_feat = nn.Parameter(all_vis_feat, requires_grad=False)
         #parametro beta per beta splatting (init a 1 ma con softplus diventa 1.31)
-        self.beta = nn.Parameter(torch.ones(self.num_gaussians, 2.5, dtype=self.dtype, device=self.device), requires_grad=True)
+        self.beta = nn.Parameter(
+            torch.full((self.num_gaussians, 1), 2.5, dtype=self.dtype, device=self.device), 
+            requires_grad=True
+        )
         
         # Plot Gaussians
         if plot_gaussians:
