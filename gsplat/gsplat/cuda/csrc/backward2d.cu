@@ -55,6 +55,7 @@ __global__ void project_gaussians_2d_scale_rot_backward_kernel(
     const float2* __restrict__ means2d,
     const float2* __restrict__ scales2d,
     const float* __restrict__ rotation,
+    const float* __restrict__ beta,
     const dim3 img_size,
     const int* __restrict__ radii,
     const float3* __restrict__ conics,
@@ -63,8 +64,13 @@ __global__ void project_gaussians_2d_scale_rot_backward_kernel(
     float3* __restrict__ v_cov2d,
     float2* __restrict__ v_mean2d,
     float2* __restrict__ v_scale,
-    float* __restrict__ v_rot
+    float* __restrict__ v_rot, 
+    float* __restrict__ v_beta
 ) {
+    // Inizializziamo sempre v_beta a 0 in questo kernel.
+    // Il vero gradiente di beta viene calcolato e accumulato nel RASTERIZZATORE.
+    v_beta[idx] = 0.f;
+
     unsigned idx = cg::this_grid().thread_rank(); // idx of thread within grid
     if (idx >= num_points || radii[idx] <= 0) {
         return;
@@ -76,6 +82,7 @@ __global__ void project_gaussians_2d_scale_rot_backward_kernel(
     glm::mat2 R_g = rotmat2d_gradient(rotation[idx]);
     glm::mat2 S = scale_to_mat2d(scales2d[idx]);
     glm::mat2 M = R * S;
+    
     glm::mat2 theta_g = R_g * S * glm::transpose(M) + M * glm::transpose(S) * glm::transpose(R_g);
     
     glm::mat2 scale_x_g = glm::mat2(0.f);

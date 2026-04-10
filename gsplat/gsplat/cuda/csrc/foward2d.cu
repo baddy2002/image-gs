@@ -11,6 +11,7 @@ __global__ void project_gaussians_2d_scale_rot_forward_kernel(
     const float2* __restrict__ means2d,
     const float2* __restrict__ scales2d,
     const float* __restrict__ rotation,
+    const float* __restrict__ beta,
     const dim3 img_size,
     const dim3 tile_bounds,
     float2* __restrict__ xys,

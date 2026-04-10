@@ -114,43 +114,42 @@ __global__ void nd_rasterize_backward_kernel(
             float2 v_xy_local = {0.f, 0.f};
             float v_beta_local = 0.f;
             
-            if (valid) {
-                const float base = 1.0f - d_squared;
-                const float alpha = powf(base, b);
+            
+            const float base = 1.0f - d_squared;
+            const float alpha = powf(base, b);
 
-                // gradiente rispetto al colore
-                for (int c = 0; c < channels; ++c)
-                    v_rgb_local[c] = alpha * v_out[c];
+            // gradiente rispetto al colore
+            for (int c = 0; c < channels; ++c)
+                v_rgb_local[c] = alpha * v_out[c];
 
-                const float* rgb = rgbs_batch[t];
+            const float* rgb = rgbs_batch[t];
 
-                /* update v_sigma for this gaussian
-                float v_sigma = 0.f;
-                for (int c = 0; c < channels; ++c)
-                    v_sigma += rgb[c] * v_out[c];
-                v_sigma *= -d;
-                */
-               //gradiente rispetto ad alpha
-               float v_alpha = 0.f;
-               for(int c = 0; c < channels; ++c)
-                    v_alpha += rgb[c] * v_out[c];
-                
-                //  Gradiente rispetto a BETA 
-                v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
+            /* update v_sigma for this gaussian
+            float v_sigma = 0.f;
+            for (int c = 0; c < channels; ++c)
+                v_sigma += rgb[c] * v_out[c];
+            v_sigma *= -d;
+            */
+            //gradiente rispetto ad alpha
+            float v_alpha = 0.f;
+            for(int c = 0; c < channels; ++c)
+                v_alpha += rgb[c] * v_out[c];
+            
+            //  Gradiente rispetto a BETA 
+            v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
 
-                // Gradiente rispetto alla DISTANZA (d_squared)
-                const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+            // Gradiente rispetto alla DISTANZA (d_squared)
+            const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
 
-                // gradiente rispetto alla conica (ABC)
-                v_conic_local = { 
-                                v_dist * delta.x * delta.x, 
-                                v_dist * delta.x * delta.y, 
-                                v_dist * delta.y * delta.y};
+            // gradiente rispetto alla conica (ABC)
+            v_conic_local = { 
+                            v_dist * delta.x * delta.x, 
+                            v_dist * delta.x * delta.y, 
+                            v_dist * delta.y * delta.y};
 
-                // gradiente rispetto xy (centroide)
-                v_xy_local = {v_dist * (2.0f * conic.x * delta.x + conic.y * delta.y), 
-                              v_dist * (2.0f * conic.z * delta.y + conic.y * delta.x)};
-            }
+            // gradiente rispetto xy (centroide)
+            v_xy_local = {v_dist * (2.0f * conic.x * delta.x + conic.y * delta.y), 
+                            v_dist * (2.0f * conic.z * delta.y + conic.y * delta.x)};
             
             // sum across the warp
             for (int c = 0; c < channels; ++c)
