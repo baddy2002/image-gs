@@ -154,8 +154,8 @@ __global__ void nd_rasterize_forward(
             if (d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
                 continue;
             }
-            
-            const float alpha = powf(1.0f - d_squared, b);
+            const float base = max(1e-4f, 1.0f - d_squared);
+            const float alpha = powf(base, b);
             int32_t g = id_batch[t];
             
             for (int c = 0; c < channels; ++c) {
@@ -271,7 +271,8 @@ __global__ void nd_rasterize_forward_topk_norm(
             if( d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
                 continue;
             }
-            const float alpha = powf(1.0f - d_squared, b);
+            const float base = max(1e-4f, 1.0f - d_squared);
+            const float alpha = powf(base, b);
             int32_t g = id_batch[t];
 
             // find the minimum value in topk
@@ -367,7 +368,8 @@ __global__ void nd_rasterize_forward_no_tiles(
         if (d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
             continue;
         }
-        const float alpha = powf(1.0f - d_squared, b);
+        const float base = max(1e-4f, 1.0f - d_squared);
+        const float alpha = powf(base, b);
 
         int32_t g_id = g;
 
@@ -515,7 +517,8 @@ __global__ void rasterize_forward(
             }
             
             //const float alpha = __expf(-sigma);
-            const float alpha = powf(1.0f - d_squared, b);
+            const float base = max(1e-4f, 1.0f - d_squared);
+            const float alpha = powf(base, b);
             int32_t g = id_batch[t];
             const float3 c = colors[g];
             pix_out.x = pix_out.x + c.x * alpha;

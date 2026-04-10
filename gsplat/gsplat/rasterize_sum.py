@@ -86,8 +86,14 @@ class _RasterizeGaussiansSum(Function):
             out_img = (
                 torch.zeros(img_height, img_width, colors.shape[-1], device=xys.device)
             )
-            gaussian_ids_sorted = torch.zeros(0, 1, device=xys.device)
-            tile_bins =           torch.zeros(0, 2, device=xys.device)
+            # FORZA IL TIPO INT32 QUI
+            gaussian_ids_sorted = torch.zeros(
+                (0,), device=xys.device, dtype=torch.int32
+            )
+            tile_bins = torch.zeros(
+                (tile_bounds[0] * tile_bounds[1], 2), 
+                device=xys.device, dtype=torch.int32
+            )
         else:
             (
                 isect_ids_unsorted,
@@ -169,21 +175,24 @@ class _RasterizeGaussiansSum(Function):
         BLOCK_W = ctx.BLOCK_W
         num_intersects = ctx.num_intersects
         topk_norm = ctx.topk_norm
-
+        # Carichiamo tutto quello che c'è nei saved_tensors
+        tensors = ctx.saved_tensors
+        gaussian_ids_sorted = tensors[0]
+        tile_bins = tensors[1]
+        xys = tensors[2]
+        conics = tensors[3]
+        colors = tensors[4]
+        beta = tensors[5]
+        
+        # Se topk_norm è True, prendiamo il settimo elemento, altrimenti None
+        pixel_topk = tensors[6] if topk_norm else None
         if num_intersects < 1:
             v_xy = torch.zeros_like(xys)
             v_conic = torch.zeros_like(conics)
             v_colors = torch.zeros_like(colors)
             v_beta = torch.zeros_like(beta) 
         elif not topk_norm:
-            (
-                gaussian_ids_sorted,
-                tile_bins,
-                xys,
-                conics,
-                colors,
-                beta
-            ) = ctx.saved_tensors
+            
             # if colors.shape[-1] == 3:
             #     rasterize_fn = _C.rasterize_backward
             # else:
@@ -202,15 +211,6 @@ class _RasterizeGaussiansSum(Function):
                 v_out_img
             )
         else:
-            (
-                gaussian_ids_sorted,
-                tile_bins,
-                xys,
-                conics,
-                colors,
-                beta,
-                pixel_topk
-            ) = ctx.saved_tensors
             v_xy, v_conic, v_colors, v_beta = _C.nd_rasterize_backward_topk_norm(
                 img_height,
                 img_width,

@@ -114,8 +114,7 @@ __global__ void nd_rasterize_backward_kernel(
             float2 v_xy_local = {0.f, 0.f};
             float v_beta_local = 0.f;
             
-            
-            const float base = 1.0f - d_squared;
+            const float base = max(1e-4f, 1.0f - d_squared);
             const float alpha = powf(base, b);
 
             // gradiente rispetto al colore
@@ -139,7 +138,7 @@ __global__ void nd_rasterize_backward_kernel(
             v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
 
             // Gradiente rispetto alla DISTANZA (d_squared)
-            const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+            const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 1e-6f));
 
             // gradiente rispetto alla conica (ABC)
             v_conic_local = { 
@@ -238,9 +237,8 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
                         conic.x * delta.x * delta.x +
                         conic.z * delta.y * delta.y +
                         conic.y * delta.x * delta.y);
-        float base = max(1.0f - d_squared, 0.0f);
+        const float base = max(1e-4f, 1.0f - d_squared);
         float alpha = powf(base, b);
-
         alpha_local[k] = alpha;
         base_local[k] = base;
         denom += alpha;
@@ -299,10 +297,10 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
         float alpha = alpha_local[k];
 
         // gradiente rispetto a beta
-        float v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
+        float v_beta_local = v_alpha * alpha * logf(max(base, 1e-4f));
 
         // Gradiente rispetto alla DISTANZA (d_squared)
-        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 1e-6f););
 
         float3 conic = conics[g_id];
         float2 xy = xys[g_id];
@@ -390,7 +388,8 @@ __global__ void nd_rasterize_backward_no_tiles_kernel(
         if (d_squared > 1.0f || d_squared < 0.f || isnan(d_squared) || isinf(d_squared)) {
             continue;
         }
-        float base = max(1.0f - d_squared, 0.0f);
+        
+        const float base = max(1e-4f, 1.0f - d_squared);
         float alpha = powf(base, b);
         denom += alpha;
         alpha_local[k] = alpha;
@@ -451,7 +450,7 @@ __global__ void nd_rasterize_backward_no_tiles_kernel(
         float v_beta_local = v_alpha * alpha * logf(max(base, 1e-6f));
 
         // Gradiente rispetto alla DISTANZA (d_squared)
-        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 1e-6f));
 
         // gradiente per conica (ABC)
         float3 v_conic_local = {
@@ -579,7 +578,7 @@ __global__ void rasterize_backward_kernel(
             float v_beta_local = 0.f;
             
             if (valid) {
-                const float base = 1.0f - d_squared;
+                const float base = max(1e-4f, 1.0f - d_squared);
                 const float alpha = powf(base, b);
                 
                 // gradiente rispetto al colore
@@ -604,7 +603,7 @@ __global__ void rasterize_backward_kernel(
 
                 // Gradiente rispetto alla DISTANZA (d_squared)
                 // controlliamo esponente non sia sotto lo 0 per evitare gradienti esplosivi quando la distanza è molto piccola
-                const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 0.0f));
+                const float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 1e-6f));
 
                 // update v_conic for this gaussian
                 v_conic_local = {   v_dist * delta.x * delta.x,          // dL/dA
