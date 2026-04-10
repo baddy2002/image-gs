@@ -196,7 +196,7 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
     float* __restrict__ v_beta,
     int* __restrict__ pixel_topk
 ) {
-
+    
     auto block = cg::this_thread_block();
     int32_t tile_id =
         block.group_index().y * tile_bounds.x + block.group_index().x;
@@ -223,7 +223,6 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
     float alpha_local[TOP_K] = {0.0f};
     float base_local[TOP_K] = {0.0f};
     float denom = EPS;
-
     for (int k = 0; k < TOP_K; ++k) {
         int g_id = topk[k];
         if (g_id < 0) continue;
@@ -237,7 +236,7 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
                         conic.x * delta.x * delta.x +
                         conic.z * delta.y * delta.y +
                         conic.y * delta.x * delta.y);
-        const float base = max(1e-4f, 1.0f - d_squared);
+        const float base = max(EPS, 1.0f - d_squared);
         float alpha = powf(base, b);
         alpha_local[k] = alpha;
         base_local[k] = base;
@@ -247,13 +246,33 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
     //DERIVATA DELLA NORMALIZZAZIONE ---
     float v_alpha_local[TOP_K] = {0.f};
 
+    
+    // Ogni alpha_k influenza tutti i pesi normalizzati
+    // FORMULA STABILE: 
+    // trasformiamo il calcolo della regola del quozionte f'(x)g(x)-f(x)g'(x) / g(x)^2: 
+    // v_norm_weight * 1/D - (alpha * v_norm_weight / D^2) - sum_{l!=k} (alpha_l * v_norm_weight / D^2) 
+    //eliminando il denominatore comune D^2 per essere più stabili numericamente:
+    // 1/D * [v_norm_weight - sum_{l} (v_norm_weight * alpha_l / D )] = 
+    // 1/D * [v_norm_weight - sum_{l} (v_norm_weight * w_l )]
+    float weighted_v_sum = 0.f;
+    for (int j = 0; j < TOP_K; ++j) {
+        if (topk[j] >= 0) {
+            float w_j = alpha_local[j] / denom;    //calcola il peso normalizzato di questa gaussiana
+            // Calcola quanto i colori degli ALTRI influenzano questo gradiente
+            float v_nw_j = 0.f;
+            const float* rgb_j = &rgbs[channels * topk[j]];
+            for (int c = 0; c < channels; ++c) v_nw_j += rgb_j[c] * v_out[c];
+            weighted_v_sum += v_nw_j * w_j; //la media pesata dei gradienti delle gaussiane su quel pixel
+        }
+    }
+    
     // compute each gaussian's contribution to the gradient
     for (int k = 0; k < TOP_K; ++k) {
         int g_id = topk[k];
         if (g_id < 0) continue;
 
         float alpha = alpha_local[k];
-        float norm_weight = alpha / denom;
+        float norm_weight = alpha / max(denom, 1e-7f);
 
         float v_rgb_local[MAX_CHANNELS] = {0.f};
 
@@ -269,6 +288,7 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
         for (int c = 0; c < channels; ++c)
             v_norm_weight += rgb[c] * v_out[c];
 
+        /*
         // Formula derivata Softmax: dL/d_alpha
         // Ogni alpha_k influenza tutti i pesi normalizzati
         // usiamo regola del quozionte f'(x)g(x)-f(x)g'(x) / g(x)^2
@@ -284,8 +304,9 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
                 v_alpha_local[l] += term_shared;
             }
         }        
+        */
+        v_alpha_local[k] = (v_norm_weight - weighted_v_sum) / (denom);
     }
-
     for (int k = 0; k < TOP_K; ++k) {
         int g_id = topk[k];
         if (g_id < 0) continue;
@@ -300,7 +321,7 @@ __global__ void nd_rasterize_backward_topk_norm_kernel(
         float v_beta_local = v_alpha * alpha * logf(max(base, 1e-4f));
 
         // Gradiente rispetto alla DISTANZA (d_squared)
-        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 1e-6f););
+        float v_dist = v_alpha * (-b) * powf(base, max(b - 1.0f, 1e-6f));
 
         float3 conic = conics[g_id];
         float2 xy = xys[g_id];
