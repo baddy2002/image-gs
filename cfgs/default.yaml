@@ -61,3 +61,4 @@ add_steps:             500
 add_times:             4
 post_min_steps:        3000
 use_mask:              False # Enable masked optimization with a user-provided binary mask (warning: the mask should be aligned with the input image and have the same resolution as the rendered image, modify with caution)
+beta_value:            1.0 # Beta parameter for beta splatting

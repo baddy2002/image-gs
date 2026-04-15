@@ -45,6 +45,7 @@ class GaussianSplatting2D(nn.Module):
     def __init__(self, args):
         super(GaussianSplatting2D, self).__init__()
         self.evaluate = args.eval
+        self.beta_value = args.beta_value
         set_random_seed(seed=args.seed)
         self.device = args.device
         self.dtype = torch.float32
@@ -310,7 +311,7 @@ class GaussianSplatting2D(nn.Module):
         self.vis_feat = nn.Parameter(torch.rand_like(self.feat), requires_grad=False)  # Only used for Gaussian ID visualization
         #parametro beta per beta splatting
         self.beta = nn.Parameter(
-            torch.full((self.num_gaussians, 1), 4.0, dtype=self.dtype, device=self.device), 
+            torch.full((self.num_gaussians, 1), self.beta_value, dtype=self.dtype, device=self.device), 
             requires_grad=True
         )
         self._log_compression_rate()
@@ -851,7 +852,7 @@ class GaussianSplatting2D(nn.Module):
         self.vis_feat = nn.Parameter(all_vis_feat, requires_grad=False)
         #parametro beta per beta splatting (init a 1 ma con softplus diventa 1.31)
         self.beta = nn.Parameter(
-            torch.full((self.num_gaussians, 1), 4.0, dtype=self.dtype, device=self.device), 
+            torch.full((self.num_gaussians, 1), self.beta_value, dtype=self.dtype, device=self.device), 
             requires_grad=True
         )
         
