@@ -74,10 +74,11 @@ for img_path in images:
             
             exp_name = f"exp_{img_name.split('.')[0]}_n{n}_b{b}"
             print(f"\n>>> Running: {exp_name}")
-            
+            input_path_for_cmd = f"textures_small/{img_name}"
+
             # NB: Assicurati che main.py accetti questo percorso relativo
             cmd = ["python", "main.py", 
-                   f"--input_path={small_path}", 
+                   f"--input_path={input_path_for_cmd}", 
                    f"--exp_name={exp_name}", 
                    f"--num_gaussians={str(n)}", 
                    f"--beta_value={str(b)}", 
