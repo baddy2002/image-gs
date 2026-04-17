@@ -1,79 +1,109 @@
 import os
 import subprocess
 import pandas as pd
-from PIL import Image
 import glob
+from PIL import Image
+from kaggle_secrets import UserSecretsClient # Importante per Kaggle!
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 
 # --- CONFIGURAZIONE ---
-input_dir = "media/textures"
-output_dir = "results"
 csv_path = "experiment_results.csv"
-images = glob.glob(f"{input_dir}/*.png")[:30] # Prendi le prime 30
+input_dir = "media/textures"
+small_dir = "media/textures_small"
+os.makedirs(small_dir, exist_ok=True)
 
+# Prendi le immagini
+images = glob.glob(f"{input_dir}/*.png")[:30]
 densities = [1000, 2500, 5000, 10000, 20000]
 betas = [1, 2, 4, 8, 10]
 
-results = []
+# --- 1. LOGIN WANDB (Il pezzo mancante) ---
+if HAS_WANDB:
+    try:
+        user_secrets = UserSecretsClient()
+        wandb_key = user_secrets.get_secret("WANDB_API_KEY")
+        wandb.login(key=wandb_key)
+        wandb.init(project="beta-splatting-texture", name="marathon_run_final", resume=True)
+    except Exception as e:
+        print(f"WandB non configurato correttamente: {e}. Procedo senza log remoto.")
+        HAS_WANDB = False
 
-os.makedirs("media/textures_small", exist_ok=True)
+# --- 2. LOGICA DI RESUME ---
+if os.path.exists(csv_path):
+    df_existing = pd.read_csv(csv_path)
+    completed = set(zip(df_existing['texture'], df_existing['gaussians'], df_existing['beta']))
+    results = df_existing.to_dict('records')
+    print(f"Rilevati {len(completed)} esperimenti già fatti. Salto...")
+else:
+    completed = set()
+    results = []
 
 for img_path in images:
     img_name = os.path.basename(img_path)
-    small_path = f"media/textures_small/{img_name}"
+    small_path = os.path.join(small_dir, img_name)
     
-    # 1. Ridimensionamento (se non esiste già)
+    # 3. RIDIMENSIONAMENTO (Se non l'hai già fatto)
     if not os.path.exists(small_path):
         with Image.open(img_path) as img:
             img = img.resize((1024, 1024), Image.LANCZOS)
             img.save(small_path)
-            print(f"Ridimensionata: {img_name}")
 
-    # 2. Ciclo Parametri
     for n in densities:
         for b in betas:
+            if (img_name, n, b) in completed:
+                continue
+            
             exp_name = f"exp_{img_name.split('.')[0]}_n{n}_b{b}"
             print(f"\n>>> Running: {exp_name}")
             
-            # Comando per lanciare il tuo main.py
-            cmd = [
-                "python", "main.py",
-                f"--input_path={small_path}",
-                f"--exp_name={exp_name}",
-                f"--num_gaussians={n}",
-                f"--beta_value={b}",
-                "--quantize",
-                "--use_mask"
-
-            ]
+            # ATTENZIONE: controlla che main.py veda correttamente questo percorso
+            cmd = ["python", "main.py", 
+                   f"--input_path=media/textures_small/{img_name}", 
+                   f"--exp_name={exp_name}", 
+                   f"--num_gaussians={n}", 
+                   f"--beta_value={b}", 
+                   "--quantize", 
+                   "--use_mask"]
             
             try:
-                # Eseguiamo e catturiamo l'output per loggare i risultati finali
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 
                 final_metrics = {}
                 for line in process.stdout:
-                    print(line, end="") # Vediamo i log in tempo reale su Kaggle
-                    if "PSNR:" in line and "SSIM:" in line and "LPIPS:" in line:
-                        # Esempio parsing: "PSNR: 30.45 | SSIM: 0.3100 | LPIPS: 0.1302"
+                    print(line, end="")
+                    if "PSNR:" in line and "LPIPS:" in line:
                         parts = line.split("|")
-                        final_metrics['psnr'] = float(parts[0].split(":")[1].strip())
-                        final_metrics['ssim'] = float(parts[1].split(":")[1].strip())
-                        final_metrics['lpips'] = float(parts[2].split(":")[1].strip())
+                        # Parsing sicuro
+                        try:
+                            final_metrics = {
+                                "texture": img_name, 
+                                "gaussians": n, 
+                                "beta": b,
+                                "psnr": float(parts[0].split(":")[1].strip()),
+                                "ssim": float(parts[1].split(":")[1].strip()),
+                                "lpips": float(parts[2].split(":")[1].strip())
+                            }
+                        except:
+                            continue
 
                 process.wait()
 
+                if final_metrics:
+                    results.append(final_metrics)
+                    # SALVATAGGIO CSV IMMEDIATO
+                    pd.DataFrame(results).to_csv(csv_path, index=False)
+                    
+                    if HAS_WANDB:
+                        wandb.log(final_metrics)
+                        
             except Exception as e:
-                print(f"Errore durante l'esecuzione di {exp_name}: {e}")
+                print(f"Errore su {exp_name}: {e}")
                 continue
-            # Salvataggio dati
-            if final_metrics:
-                results.append({
-                    "texture": img_name,
-                    "gaussians": n,
-                    "beta": b,
-                    **final_metrics
-                })
-                
-                # Salva il CSV ad ogni passo (così se Kaggle crasha non perdi tutto)
-                pd.DataFrame(results).to_csv(csv_path, index=False)
-print("\n--- ESPERIMENTI COMPLETATI ---")
+
+if HAS_WANDB:
+    wandb.finish()
