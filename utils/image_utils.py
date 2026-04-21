@@ -35,15 +35,18 @@ GAUSSIAN_COLOR = "#80ed99"
 
 
 def get_psnr(image1, image2, mask, max_value=1.0):
-    # Prendiamo solo i pixel dove la maschera è attiva
-    # images e gt_images sono [C, H, W], mask è [1, H, W]
-    active_pixels_pred = image1[:, mask.squeeze(0) > 0.5]
-    active_pixels_gt = image2[:, mask.squeeze(0) > 0.5]
-    # Calcoliamo il MSE solo su questi pixel
-    mse_masked = torch.mean((active_pixels_pred - active_pixels_gt)**2)
+
+    # Calcoliamo MSE su tutta l'immagine
+    squared_error = (image1 - image2)**2
+    # I pixel fuori maschera avranno errore = 0
+    masked_squared_error = squared_error * mask
+    # media basata sui pixel attivi (dove mask > 0.5) e sui canali
+    num_active_pixels = torch.sum(mask) * image1.shape[0] # Pixel attivi * Canali
+    mse_masked = torch.sum(masked_squared_error) / num_active_pixels
+    
     if mse_masked.item() <= 1e-7:
         return float('inf')
-    psnr_masked = 20 * torch.log10(1.0 / torch.sqrt(mse_masked))
+    psnr_masked = 20 * torch.log10(torch.tensor(max_value) / torch.sqrt(mse_masked))
     return psnr_masked.item()
 
 

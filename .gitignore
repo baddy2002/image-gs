@@ -187,3 +187,8 @@ cython_debug/
 comparations/
 
 temp.py
+
+
+experiment_results.csv
+
+plots/
