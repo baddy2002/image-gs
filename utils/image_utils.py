@@ -35,7 +35,9 @@ GAUSSIAN_COLOR = "#80ed99"
 
 
 def get_psnr(image1, image2, mask, max_value=1.0):
-
+    if torch.isnan(image1).any() or torch.isinf(image1).any():
+        # Se ci sono NaN, il PSNR è tecnicamente nullo
+        return 0.0
     # Calcoliamo MSE su tutta l'immagine
     squared_error = (image1 - image2)**2
     # I pixel fuori maschera avranno errore = 0
