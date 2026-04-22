@@ -35,20 +35,36 @@ GAUSSIAN_COLOR = "#80ed99"
 
 
 def get_psnr(image1, image2, mask, max_value=1.0):
-    if torch.isnan(image1).any() or torch.isinf(image1).any():
-        # Se ci sono NaN, il PSNR è tecnicamente nullo
+    # Assicuriamoci che la maschera sia [1, H, W]
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0)
+    if mask.shape[0] != 1:
+        mask = mask.mean(dim=0, keepdim=True)
+
+    # Consideriamo solo i pixel attivi nella maschera per evitare che NaN/inf fuori maschera
+    # azzerata penalizzi il PSNR.
+    active_mask = mask > 0.5
+    if active_mask.sum() == 0:
         return 0.0
-    # Calcoliamo MSE su tutta l'immagine
-    squared_error = (image1 - image2)**2
-    # I pixel fuori maschera avranno errore = 0
-    masked_squared_error = squared_error * mask
-    # media basata sui pixel attivi (dove mask > 0.5) e sui canali
-    num_active_pixels = torch.sum(mask) * image1.shape[0] # Pixel attivi * Canali
-    mse_masked = torch.sum(masked_squared_error) / num_active_pixels
-    
+
+    # Espandiamo la maschera sui canali e selezioniamo solo i pixel validi
+    if image1.dim() == 2:
+        image1 = image1.unsqueeze(0)
+    if image2.dim() == 2:
+        image2 = image2.unsqueeze(0)
+    active_mask = active_mask.expand_as(image1)
+    active_pred = image1[active_mask]
+    active_gt = image2[active_mask]
+
+    if active_pred.numel() == 0:
+        return 0.0
+    if torch.isnan(active_pred).any() or torch.isinf(active_pred).any() or torch.isnan(active_gt).any() or torch.isinf(active_gt).any():
+        return 0.0
+
+    mse_masked = torch.mean((active_pred - active_gt) ** 2)
     if mse_masked.item() <= 1e-7:
         return float('inf')
-    psnr_masked = 20 * torch.log10(torch.tensor(max_value) / torch.sqrt(mse_masked))
+    psnr_masked = 20 * torch.log10(torch.tensor(max_value, device=image1.device) / torch.sqrt(mse_masked))
     return psnr_masked.item()
 
 
