@@ -513,6 +513,7 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info(f"Step: {self.start_step-1:d} | Time: {render_time:.6f} s")
         self.worklog.info(f"Rendering at resolution ({img_h:d}, {img_w:d}) completed")
         self.worklog.info("***********************************************")
+        torch.cuda.empty_cache()
 
     def benchmark_render_time(self, num_reps, render_height=None):
         img_h, img_w = self.img_h, self.img_w
@@ -629,6 +630,7 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info("***********************************************")
         self.worklog.info(f"Mean scale: {self._get_scale().mean().item():.4f} (pixel) | {self.scale.mean().item():.4f} (raw)")
         self.worklog.info("***********************************************")
+        torch.cuda.empty_cache()
         return self.psnr_curr, self.ssim_curr
 
     def _get_total_loss(self, images):
