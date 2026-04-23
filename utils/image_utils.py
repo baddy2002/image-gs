@@ -61,6 +61,10 @@ def get_psnr(image1, image2, mask, max_value=1.0):
     if torch.isnan(active_pred).any() or torch.isinf(active_pred).any() or torch.isnan(active_gt).any() or torch.isinf(active_gt).any():
         return 0.0
 
+    # Clamp per sicurezza, anche se dovrebbe essere già fatto upstream
+    active_pred = torch.clamp(active_pred, 0.0, max_value)
+    active_gt = torch.clamp(active_gt, 0.0, max_value)
+
     mse_masked = torch.mean((active_pred - active_gt) ** 2)
     if mse_masked.item() <= 1e-7:
         return float('inf')

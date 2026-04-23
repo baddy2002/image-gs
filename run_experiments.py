@@ -91,19 +91,23 @@ for img_path in images:
                 for line in process.stdout:
                     print(line, end="")
                     if "PSNR:" in line and "LPIPS:" in line:
-                        parts = line.split("|")
                         try:
-                            # Estraiamo solo i 6 valori puliti
-                            final_metrics = {
-                                "texture": img_name,
-                                "gaussians": n,
-                                "beta": b,
-                                "psnr": float(parts[0].split(":")[1].strip()),
-                                "ssim": float(parts[1].split(":")[1].strip()),
-                                "lpips": float(parts[2].split(":")[1].strip())
-                            }
-                        except: continue
-
+                            psnr_match  = re.search(r'PSNR:\s*([\d.]+)', line)
+                            ssim_match  = re.search(r'SSIM:\s*([\d.]+)', line)
+                            lpips_match = re.search(r'LPIPS:\s*([\d.]+)', line)
+                            
+                            if psnr_match and ssim_match and lpips_match:
+                                final_metrics = {
+                                    "texture":   img_name,
+                                    "gaussians": n,
+                                    "beta":      b,
+                                    "psnr":      float(psnr_match.group(1)),
+                                    "ssim":      float(ssim_match.group(1)),
+                                    "lpips":     float(lpips_match.group(1))
+                                }
+                        except Exception as parse_err:
+                            print(f"Parse error: {parse_err} on line: {line}")
+                            continue
                 process.wait()
 
                 if final_metrics:

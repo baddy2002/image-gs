@@ -556,6 +556,9 @@ class GaussianSplatting2D(nn.Module):
         if benchmark:
             return render_time
         out_image = out_image.view(-1, img_h, img_w, self.feat_dim).permute(0, 3, 1, 2).contiguous()
+        # Gestione NaN/Inf dal kernel CUDA
+        out_image = torch.where(torch.isnan(out_image) | torch.isinf(out_image), torch.tensor(0.0, device=out_image.device), out_image)
+        out_image = torch.clamp(out_image, 0.0, 1.0)
         return out_image.squeeze(dim=0), render_time
 
     def _get_scale(self, upsample_ratio=None):
@@ -584,6 +587,9 @@ class GaussianSplatting2D(nn.Module):
             tmp = xy, conics, feat, beta_for_cuda, img_h, img_w
             out_image = rasterize_gaussians_no_tiles(*tmp)
         out_image = out_image.view(-1, img_h, img_w, self.feat_dim).permute(0, 3, 1, 2).contiguous()
+        # Gestione NaN/Inf dal kernel CUDA
+        out_image = torch.where(torch.isnan(out_image) | torch.isinf(out_image), torch.tensor(0.0, device=out_image.device), out_image)
+        out_image = torch.clamp(out_image, 0.0, 1.0)
         return out_image.squeeze(dim=0)
 
     def optimize(self):
