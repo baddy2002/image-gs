@@ -135,34 +135,32 @@ class GaussianSplatting2D(nn.Module):
         self._mask_empty_areas(args)
         
     def _mask_empty_areas(self, args):
-        #FIXME: siamo sicuri?
-
-        # 1. Portiamo l'immagine in CPU, trasformiamola in Numpy e rendiamola "Contigua"
+        # portiamo l'immagine in CPU, trasformiamola in Numpy e rendiamola "Contigua"
         # Spostiamo i canali da (C, H, W) a (H, W, C) per OpenCV
         img_np = (self.gt_images.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
         img_np = np.ascontiguousarray(img_np) # FONDAMENTALE per evitare l'errore che hai avuto
         h, w, _ = img_np.shape
-        # 2. Creiamo una maschera inizialmente tutta bianca (255)
+        # creiamo una maschera inizialmente tutta bianca (255)
         # Lo scopo è colorare di nero (0) le zone esterne
         flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
 
-        # 3. Definiamo i punti di partenza (i 4 angoli) e metà dei bordi
+        # definiamo i punti di partenza (i 4 angoli) e metà dei bordi
         seeds = [(0, 0), (0, w-1), (h-1, 0), (h-1, w-1), (h//2, 0), (h//2, w-1)]
 
-        # 4. Flood Fill: partiamo dagli angoli. 
+        # Flood Fill: partiamo dagli angoli. 
         # Se il colore è simile (tolleranza 2,2,2), lo consideriamo "vuoto"
         for seed in seeds:
             cv2.floodFill(img_np, flood_mask, seed, (0, 0, 0), 
                         loDiff=(2, 2, 2), upDiff=(2, 2, 2), 
                         flags=4 | cv2.FLOODFILL_FIXED_RANGE)
             
-        # Creiamo una mappa di quello che è MOLTO nero ma non è ancora stato riempito
+        # creiamo una mappa di quello che è MOLTO nero ma non è ancora stato riempito
         gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        # Solo pixel quasi neri (soglia bassa < 4) e che la flood_mask attuale segna come "non riempiti" (0)
+        # solo pixel quasi neri (soglia bassa < 4) e che la flood_mask attuale segna come "non riempiti" (0)
         potential_holes = (gray < 8) & (flood_mask[1:-1, 1:-1] == 0)
         potential_holes = potential_holes.astype(np.uint8) * 255
 
-        # Troviamo i centri di queste "isole nere" per non lanciare 1000 floodfill inutili
+        # troviamo i centri di queste "isole nere" per non lanciare 1000 floodfill inutili
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(potential_holes, connectivity=4)
 
         # Per ogni isola nera trovata, lanciamo un piccolo flood fill
